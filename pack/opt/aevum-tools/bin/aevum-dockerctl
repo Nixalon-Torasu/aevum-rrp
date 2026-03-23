@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# aevum-dockerctl
+# Enforces Docker mode policy from /etc/aevum/docker.conf.
+
+CONF="/etc/aevum/docker.conf"
+[[ -f "$CONF" ]] && source "$CONF"
+
+: "${AEVUM_DOCKER_MODE:=disabled}"
+: "${AEVUM_DOCKER_ROOTLESS_USER:=}"
+
+receipt() {
+  [[ -x /opt/aevum-tools/bin/aevum-receipt ]] && /opt/aevum-tools/bin/aevum-receipt "$@" || true
+}
+
+if [[ "${AEVUM_DOCKER_MODE}" == "disabled" ]]; then
+  systemctl stop docker.service containerd.service >/dev/null 2>&1 || true
+  systemctl disable docker.service containerd.service >/dev/null 2>&1 || true
+  systemctl mask docker.service containerd.service >/dev/null 2>&1 || true
+  receipt note "docker policy applied" component=docker mode=disabled || true
+  echo "OK: docker disabled"
+  exit 0
+fi
+
+if [[ "${AEVUM_DOCKER_MODE}" == "rootful" ]]; then
+  systemctl unmask docker.service containerd.service >/dev/null 2>&1 || true
+  systemctl enable docker.service containerd.service >/dev/null 2>&1 || true
+  systemctl start containerd.service docker.service >/dev/null 2>&1 || true
+  receipt note "docker policy applied" component=docker mode=rootful || true
+  echo "OK: docker rootful enabled"
+  exit 0
+fi
+
+if [[ "${AEVUM_DOCKER_MODE}" == "rootless" ]]; then
+  # We do not auto-configure rootless (requires a user session). We only enforce "no rootful docker".
+  systemctl stop docker.service containerd.service >/dev/null 2>&1 || true
+  systemctl disable docker.service containerd.service >/dev/null 2>&1 || true
+  systemctl mask docker.service containerd.service >/dev/null 2>&1 || true
+  receipt note "docker policy applied" component=docker mode=rootless notice="rootless not auto-configured; run dockerd-rootless-setuptool.sh as a user" user="${AEVUM_DOCKER_ROOTLESS_USER}" || true
+  echo "OK: rootful docker disabled; rootless must be configured per-user"
+  exit 0
+fi
+
+echo "ERROR: unknown AEVUM_DOCKER_MODE=${AEVUM_DOCKER_MODE}" >&2
+exit 2

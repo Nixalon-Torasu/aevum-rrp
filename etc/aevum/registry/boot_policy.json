@@ -1,0 +1,16 @@
+{
+  "capture": {
+    "hash_boot_artifacts": true,
+    "max_efi_binaries": 80,
+    "secureboot": true,
+    "tpm_eventlog": true,
+    "tpm_pcr": true
+  },
+  "generated_at_utc": "2026-02-04T00:00:00Z",
+  "type": "aevum_boot_policy_v1",
+  "verification": {
+    "non_gating": true,
+    "warn_on_missing_tpm": true,
+    "warn_on_secureboot_disabled": false
+  }
+}

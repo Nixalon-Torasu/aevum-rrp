@@ -1,0 +1,37 @@
+{
+  "enabled": true,
+  "match": {
+    "allow_components": [
+      "tpm_policy",
+      "tpm_policy_transition",
+      "identity",
+      "gpg",
+      "controlplane",
+      "import_gate",
+      "import",
+      "firewall_policy",
+      "net_policy"
+    ],
+    "allow_kinds": [
+      "note",
+      "warn",
+      "info",
+      "error"
+    ],
+    "kv_key": "component"
+  },
+  "max_per_second": 2,
+  "mode": "observe",
+  "notes": "Selective TPM signing policy for receipts. TPM signs per-second TimeChain blocks; this policy signs only allowlisted receipts to avoid TPM bottleneck.",
+  "rate_limit_state": "/run/aevum/tpm/receipt_sign_rate.json",
+  "schema": "AEVUM:TPM:RECEIPT_SIGN_POLICY:V1",
+  "tpm_sign": {
+    "handle_file": "/var/lib/aevum/workstation/tpm_sign/sign.handle",
+    "pubkey_pem": "/var/lib/aevum/workstation/tpm_sign/sign.pub.pem",
+    "tpm2_sign_args": [
+      "-g",
+      "sha256"
+    ]
+  },
+  "version": "1.0.0"
+}

@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# aevum-tpm-sign-init
+#
+# Creates a persistent TPM-resident signing key (ECC P-256) used to sign *anchor* artifacts.
+# This does NOT replace the Ed25519 device key used for normal receipts.
+# It strengthens claims: "this workstation identity existed on this TPM under these PCR conditions."
+#
+# Artifacts:
+#   /var/lib/aevum/<instance>/tpm_sign/
+#     sign.handle
+#     sign.pub.pem
+#
+# Default handle: 0x81020001
+#
+# Non-gating: exits 0 if TPM not present.
+
+BASE="/var/lib/aevum"
+INSTANCE="workstation"
+HANDLE="0x81020001"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base) BASE="$2"; shift 2;;
+    --instance) INSTANCE="$2"; shift 2;;
+    --handle) HANDLE="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+
+[[ "$(id -u)" -eq 0 ]] || { echo "Run as root." >&2; exit 2; }
+
+if ! command -v tpm2_createprimary >/dev/null 2>&1; then
+  echo "INFO: TPM tools not found; skipping TPM signing init."
+  exit 0
+fi
+
+TPMDIR="${BASE}/${INSTANCE}/tpm_sign"
+mkdir -p "${TPMDIR}"
+chmod 0700 "${TPMDIR}"
+
+HANDLE_FILE="${TPMDIR}/sign.handle"
+PUB_PEM="${TPMDIR}/sign.pub.pem"
+
+if [[ -f "${HANDLE_FILE}" && -f "${PUB_PEM}" ]]; then
+  echo "OK: TPM signing key already initialized (handle=$(cat "${HANDLE_FILE}"))"
+  exit 0
+fi
+
+primary_ctx="${TPMDIR}/primary.ctx"
+key_pub="${TPMDIR}/sign.pub"
+key_priv="${TPMDIR}/sign.priv"
+key_ctx="${TPMDIR}/sign.ctx"
+
+# Create primary (owner)
+tpm2_createprimary -C o -g sha256 -G ecc -c "${primary_ctx}" >/dev/null
+
+# Create ECC signing key under primary
+tpm2_create -C "${primary_ctx}" -g sha256 -G ecc -u "${key_pub}" -r "${key_priv}" \
+  -a "sign|fixedtpm|fixedparent|sensitivedataorigin|userwithauth" >/dev/null
+
+tpm2_load -C "${primary_ctx}" -u "${key_pub}" -r "${key_priv}" -c "${key_ctx}" >/dev/null
+
+# Persist at handle (replace if exists)
+tpm2_evictcontrol -C o -c "${key_ctx}" "${HANDLE}" >/dev/null 2>&1 || true
+tpm2_evictcontrol -C o -c "${key_ctx}" "${HANDLE}" >/dev/null
+
+# Write public key as PEM for verification/auditing
+tpm2_readpublic -c "${HANDLE}" -f pem -o "${PUB_PEM}" >/dev/null 2>&1 || true
+echo "${HANDLE}" > "${HANDLE_FILE}"
+chmod 0600 "${HANDLE_FILE}"
+chmod 0644 "${PUB_PEM}" || true
+
+# Receipt (non-gating)
+if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+  fp="$(sha256sum "${PUB_PEM}" 2>/dev/null | awk '{print $1}')"
+  /opt/aevum-tools/bin/aevum-receipt note "tpm signing key initialized" component=tpm handle="${HANDLE}" pub="sha256:${fp}" instance="${INSTANCE}" || true
+fi
+
+echo "OK: initialized TPM signing key handle=${HANDLE} pub=${PUB_PEM}"

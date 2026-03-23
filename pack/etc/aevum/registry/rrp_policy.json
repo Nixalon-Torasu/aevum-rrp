@@ -1,0 +1,17 @@
+{
+  "max_pointers": 64,
+  "max_request_bytes": 65536,
+  "max_requests_per_sec": 20,
+  "non_gating": true,
+  "peer_uids_allow": [
+    "root",
+    "aevum-core"
+  ],
+  "printerd_unit": "aevum-rrp-printerd.service",
+  "proto": "AEVUM:PROTO:RRP:LOCAL_STRICT:V1_0",
+  "reject_on_clock_skew_ms": 300000,
+  "require_printerd_live": true,
+  "require_signature": true,
+  "socket_path": "/run/aevum/rrp.sock",
+  "type": "aevum_rrp_policy_v1"
+}

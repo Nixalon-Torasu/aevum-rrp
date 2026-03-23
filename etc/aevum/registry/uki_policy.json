@@ -1,0 +1,11 @@
+{
+  "cert_path": "/etc/aevum/secureboot/keys/uki_signing.crt",
+  "der_path": "/etc/aevum/secureboot/keys/uki_signing.der",
+  "enabled_default": false,
+  "key_path": "/etc/aevum/secureboot/keys/uki_signing.key",
+  "max_cmdline_len": 4096,
+  "output_dir": "/boot/efi/EFI/Linux",
+  "signed_name_template": "aevum-uki-{uname_r}.signed.efi",
+  "type": "aevum_uki_policy_v1",
+  "unsigned_name_template": "aevum-uki-{uname_r}.efi"
+}

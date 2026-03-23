@@ -1,0 +1,35 @@
+[Unit]
+Description=Aevum Receipt Request Printer (RRP)
+ConditionPathExists=/var/lib/aevum/workstation/identity/device_ed25519_sk.pem
+After=network.target aevum-registry-seal.service
+Wants=network.target aevum-registry-seal.service
+
+[Service]
+Type=simple
+ExecStartPre=/opt/aevum-tools/bin/aevum-registry-verify --strict
+ExecStart=/usr/local/sbin/aevum_rrp_printerd.py --base /var/lib/aevum/workstation --socket /run/aevum/rrp.sock
+User=root
+Group=aevum-core
+RuntimeDirectory=aevum
+RuntimeDirectoryMode=0750
+UMask=0077
+Restart=on-failure
+RestartSec=2s
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+ReadWritePaths=/var/lib/aevum /run/aevum /var/log /etc/aevum
+
+[Install]
+WantedBy=multi-user.target

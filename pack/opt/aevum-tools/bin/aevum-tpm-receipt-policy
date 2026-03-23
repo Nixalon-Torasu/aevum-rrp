@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# AEVUM_FIX_PY_HEREDOC_TERMINATORS_V1
+set -euo pipefail
+# aevum-tpm-receipt-policy (v0.1)
+#
+# Manages selective TPM signing of receipts (allowlist) without turning TPM into a bottleneck.
+#
+# Canonical policy:
+#   /etc/aevum/registry/tpm_receipt_sign_policy.json
+#
+# Stable pointers:
+#   /var/lib/aevum/workstation/accurate/state/CURRENT_TPM_RECEIPT_SIGN_POLICY.json
+#   /var/lib/aevum/workstation/tpm_sign/policies/CURRENT_RECEIPT_SIGN_POLICY.json
+#
+# Emits receipts on changes and explicit transitions.
+
+BASE="/var/lib/aevum/workstation"
+POLICY_ETC="/etc/aevum/registry/tpm_receipt_sign_policy.json"
+STATE_PTR="${BASE}/accurate/state/CURRENT_TPM_RECEIPT_SIGN_POLICY.json"
+CUR_PTR="${BASE}/tpm_sign/policies/CURRENT_RECEIPT_SIGN_POLICY.json"
+CHANGE_META="${BASE}/tpm_sign/policies/LAST_RECEIPT_POLICY_CHANGE_META.json"
+
+CMD="${1:-show}"; shift || true
+die(){ echo "ERROR: $*" >&2; exit 2; }
+need_root(){ [[ "$(id -u)" -eq 0 ]] || die "Run as root."; }
+
+hash_file(){ [[ -f "$1" ]] && sha256sum "$1" | awk '{print $1}' || echo ""; }
+
+record_meta(){
+  local method="$1"; local reason="${2:-}"
+  mkdir -p "$(dirname "${CHANGE_META}")" || true
+  python3 - <<'PY' "${CHANGE_META}" "${method}" "${reason}"
+import json,sys,datetime
+p=sys.argv[1]; m=sys.argv[2]; r=sys.argv[3]
+o={"ts_utc": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"), "method": m, "reason": r}
+open(p,"w",encoding="utf-8").write(json.dumps(o, indent=2, sort_keys=True)+"\n")
+PY
+  chmod 0600 "${CHANGE_META}" || true
+}
+
+do_show(){ [[ -f "${POLICY_ETC}" ]] || die "missing ${POLICY_ETC}"; cat "${POLICY_ETC}"; }
+do_hash(){ h="$(hash_file "${POLICY_ETC}")"; [[ -n "${h}" ]] && echo "sha256:${h}" || echo ""; }
+
+do_sync(){
+  need_root
+  [[ -f "${POLICY_ETC}" ]] || die "missing ${POLICY_ETC}"
+  mkdir -p "${BASE}/tpm_sign/policies" "${BASE}/accurate/state"
+  chmod 0700 "${BASE}/tpm_sign" "${BASE}/tpm_sign/policies" "${BASE}/accurate" "${BASE}/accurate/state" 2>/dev/null || true
+
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  out="${BASE}/tpm_sign/policies/receipt_sign_policy_${ts}.json"
+  cp -f "${POLICY_ETC}" "${out}"
+  chmod 0600 "${out}" || true
+
+  newh="$(hash_file "${out}")"
+  oldh=""
+  if [[ -f "${CUR_PTR}" ]]; then oldh="$(hash_file "${CUR_PTR}")"; fi
+
+  cp -f "${out}" "${CUR_PTR}" || true
+  chmod 0600 "${CUR_PTR}" || true
+  cp -f "${out}" "${STATE_PTR}" || true
+  chmod 0600 "${STATE_PTR}" || true
+
+  if [[ "${newh}" != "${oldh}" ]]; then
+    if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+      /opt/aevum-tools/bin/aevum-receipt note "tpm receipt-sign policy updated" component=tpm_receipt_policy instance=workstation file="${out}" manifest="sha256:${newh}" || true
+      method=""; reason=""
+      if [[ -f "${CHANGE_META}" ]]; then
+        method="$(python3 - <<'PY' "${CHANGE_META}"
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("method",""))
+PY
+)"
+        reason="$(python3 - <<'PY' "${CHANGE_META}"
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("reason",""))
+PY
+)"
+      fi
+      /opt/aevum-tools/bin/aevum-receipt note "tpm_receipt_sign_policy_transition" component=tpm_receipt_policy_transition instance=workstation \
+        from_policy_sha256="sha256:${oldh}" to_policy_sha256="sha256:${newh}" method="${method}" reason="${reason}" || true
+    fi
+  fi
+
+  echo "OK: synced receipt-sign policy sha256:${newh}"
+}
+
+do_set(){
+  need_root
+  enabled=""
+  maxps=""
+  allow=""
+  reason=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --enabled) enabled="$2"; shift 2;;
+      --max-per-second) maxps="$2"; shift 2;;
+      --allow-components) allow="$2"; shift 2;;
+      --reason) reason="$2"; shift 2;;
+      *) shift;;
+    esac
+  done
+  [[ -f "${POLICY_ETC}" ]] || die "missing ${POLICY_ETC}"
+  tmp="$(mktemp)"
+  python3 - <<'PY' "${POLICY_ETC}" "${tmp}" "${enabled}" "${maxps}" "${allow}"
+import json,sys
+src, dst = sys.argv[1], sys.argv[2]
+enabled_s, maxps_s, allow_s = sys.argv[3].strip(), sys.argv[4].strip(), sys.argv[5].strip()
+o=json.load(open(src,'r',encoding='utf-8'))
+if enabled_s.lower() in ("true","false"):
+    o["enabled"] = (enabled_s.lower()=="true")
+if maxps_s:
+    try: o["max_per_second"]=int(maxps_s)
+    except: pass
+if allow_s:
+    comps=[c.strip() for c in allow_s.split(",") if c.strip()]
+    o.setdefault("match",{})["allow_components"]=comps
+open(dst,'w',encoding='utf-8').write(json.dumps(o, indent=2, sort_keys=True)+"\n")
+PY
+  cp -f "${tmp}" "${POLICY_ETC}"
+  chmod 0644 "${POLICY_ETC}" || true
+  rm -f "${tmp}" || true
+  record_meta "set" "${reason}"
+  do_sync
+}
+
+case "${CMD}" in
+  show) do_show;;
+  hash) do_hash;;
+  sync) do_sync;;
+  set) do_set "$@";;
+  *) die "unknown subcommand: ${CMD}";;
+esac

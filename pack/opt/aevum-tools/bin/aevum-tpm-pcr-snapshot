@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# aevum-tpm-pcr-snapshot (v0.5)
+# Capture TPM PCR values for one or more hash banks and emit:
+#  - pcr_<ts>_<bank>.json (per-bank, backward-compatible)
+#  - pcrmap_<ts>.json     (multi-bank map + combined digest anchor)
+#
+# Non-gating: exits 0 if TPM tools are missing or TPM is unavailable.
+
+BASE="/var/lib/aevum"
+INSTANCE="workstation"
+TPM_PCR_POLICY="/etc/aevum/registry/tpm_pcr_policy.json"
+OUTDIR=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base) BASE="$2"; shift 2;;
+    --instance) INSTANCE="$2"; shift 2;;
+    --policy) TPM_PCR_POLICY="$2"; shift 2;;
+    --outdir) OUTDIR="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+
+[[ "$(id -u)" -eq 0 ]] || { echo "Run as root." >&2; exit 2; }
+
+if ! command -v tpm2_pcrread >/dev/null 2>&1; then
+  echo "SKIP: tpm2-tools not installed."
+  exit 0
+fi
+
+# policy sync (best-effort)
+POLICY_REF="${BASE}/${INSTANCE}/accurate/state/CURRENT_TPM_PCR_POLICY.json"
+mkdir -p "$(dirname "${POLICY_REF}")" || true
+if [[ -f "${TPM_PCR_POLICY}" ]]; then
+  cp -f "${TPM_PCR_POLICY}" "${POLICY_REF}" 2>/dev/null || true
+  chmod 0644 "${POLICY_REF}" 2>/dev/null || true
+fi
+
+read_pcrs_and_banks() {
+  python3 - <<'PY'
+import json, os
+p=os.environ.get("TPM_PCR_POLICY")
+try:
+    o=json.load(open(p,'r',encoding='utf-8'))
+except Exception:
+    o={}
+pcrs=o.get("pcrs",[0,2,7])
+banks=o.get("banks") or [o.get("bank","sha256")]
+banks=[str(b).strip().lower() for b in banks if str(b).strip()]
+seen=set(); out=[]
+for b in banks:
+    if b not in seen:
+        seen.add(b); out.append(b)
+print(",".join(str(int(x)) for x in pcrs))
+print(",".join(out))
+PY
+}
+
+export TPM_PCR_POLICY
+PCRS_CSV="$(read_pcrs_and_banks | sed -n '1p')"
+BANKS_CSV="$(read_pcrs_and_banks | sed -n '2p')"
+PCRS="${PCRS_CSV}"
+IFS=',' read -r -a BANKS <<< "${BANKS_CSV}"
+
+if [[ -z "${OUTDIR}" ]]; then
+  OUTDIR="${BASE}/${INSTANCE}/boot"
+fi
+mkdir -p "${OUTDIR}"
+chmod 0700 "${OUTDIR}" || true
+
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+host="$(hostname)"
+kernel="$(uname -r)"
+
+policy_sha=""
+if [[ -f "${POLICY_REF}" ]]; then
+  policy_sha="$(sha256sum "${POLICY_REF}" | awk '{print $1}')"
+elif [[ -f "${TPM_PCR_POLICY}" ]]; then
+  policy_sha="$(sha256sum "${TPM_PCR_POLICY}" | awk '{print $1}')"
+fi
+
+secure_boot="unknown"
+if command -v mokutil >/dev/null 2>&1; then
+  if mokutil --sb-state 2>/dev/null | grep -qi 'enabled'; then secure_boot="enabled"; else secure_boot="disabled"; fi
+fi
+export SECURE_BOOT="${secure_boot}"
+
+declare -A BANK_JSON
+declare -A BANK_DIGEST
+banks_present=()
+
+for b in "${BANKS[@]}"; do
+  pcr_text="$(tpm2_pcrread "${b}:${PCRS}" 2>/dev/null || true)"
+  [[ -n "${pcr_text}" ]] || continue
+  banks_present+=("${b}")
+
+  export PCR_TEXT="${pcr_text}"
+  bank_json="$(python3 - <<'PY'
+import re, json, os
+txt=os.environ.get("PCR_TEXT","")
+vals={}
+for line in txt.splitlines():
+    m=re.search(r'^\s*(\d+)\s*:\s*(0x[0-9A-Fa-f]+)\s*$', line)
+    if m:
+        vals[m.group(1)] = m.group(2)[2:].lower()
+print(json.dumps(vals, sort_keys=True, separators=(",",":")))
+PY
+)"
+  BANK_JSON["${b}"]="${bank_json}"
+
+  export BANK_JSON_STR="${bank_json}"
+  BANK_DIGEST["${b}"]="$(python3 - <<'PY'
+import hashlib, os
+s=os.environ.get("BANK_JSON_STR","").encode("utf-8")
+print(hashlib.sha256(s).hexdigest())
+PY
+)"
+
+  outjson="${OUTDIR}/pcr_${ts}_${b}.json"
+  export HOST="${host}" KERNEL="${kernel}" TS="${ts}" PCRS="${PCRS}" BANK="${b}" POLICY_SHA="${policy_sha}" POLICY_REF="${POLICY_REF}"
+  export BANK_JSON="${bank_json}"
+  export BANK_DIGEST_HEX="${BANK_DIGEST[$b]}"
+
+  python3 - <<'PY' > "${outjson}"
+import json, os
+obj={
+  "type":"aevum_tpm_pcr_snapshot_v1",
+  "timestamp_utc": os.environ["TS"],
+  "hostname": os.environ["HOST"],
+  "kernel": os.environ.get("KERNEL",""),
+  "pcrs": [int(x) for x in os.environ.get("PCRS","").split(",") if x],
+  "pcr_bank": os.environ.get("BANK","sha256"),
+  "tpm_pcr_policy_sha256": ("sha256:"+os.environ.get("POLICY_SHA","")) if os.environ.get("POLICY_SHA","") else "",
+  "tpm_pcr_policy_path": os.environ.get("POLICY_REF",""),
+  "secure_boot": os.environ.get("SECURE_BOOT","unknown"),
+  "pcr_values": json.loads(os.environ.get("BANK_JSON","{}") or "{}"),
+  "per_bank_digest_sha256": "sha256:"+os.environ.get("BANK_DIGEST_HEX",""),
+}
+print(json.dumps(obj, indent=2, sort_keys=True))
+PY
+  chmod 0600 "${outjson}" || true
+
+  if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+    h="$(sha256sum "${outjson}" | awk '{print $1}')"
+    /opt/aevum-tools/bin/aevum-receipt note "tpm pcr snapshot" component=tpm file="${outjson}" manifest="sha256:${h}" bank="${b}" || true
+  fi
+done
+
+if [[ "${#banks_present[@]}" -eq 0 ]]; then
+  echo "SKIP: no PCR banks readable (TPM absent/disabled?)"
+  exit 0
+fi
+
+declare -A QUOTE_REF
+declare -A QUOTE_SHA
+for b in "${banks_present[@]}"; do
+  if [[ -x /opt/aevum-tools/bin/aevum-tpm-quote ]]; then
+    qout="$(/opt/aevum-tools/bin/aevum-tpm-quote --base "${BASE}" --instance "${INSTANCE}" --pcrs "${PCRS}" --bank "${b}" 2>/dev/null | awk '{print $2}' || true)"
+    if [[ -n "${qout}" && -f "${qout}" ]]; then
+      QUOTE_REF["${b}"]="${qout}"
+      QUOTE_SHA["${b}"]="$(sha256sum "${qout}" | awk '{print $1}')"
+    fi
+  fi
+done
+
+export HOST="${host}" KERNEL="${kernel}" TS="${ts}" PCRS="${PCRS}" POLICY_SHA="${policy_sha}" POLICY_REF="${POLICY_REF}" SECURE_BOOT="${secure_boot}"
+export BANKS_REQUESTED="${BANKS_CSV}"
+export BANKS_PRESENT="$(IFS=,; echo "${banks_present[*]}")"
+
+# export per-bank JSON blobs for python blocks
+for b in "${banks_present[@]}"; do
+  export "BANK_JSON__${b}=${BANK_JSON[$b]}"
+  export "BANK_DIGEST__${b}=${BANK_DIGEST[$b]}"
+  [[ -n "${QUOTE_REF[$b]-}" ]] && export "QUOTE_REF__${b}=${QUOTE_REF[$b]}"
+  [[ -n "${QUOTE_SHA[$b]-}" ]] && export "QUOTE_SHA__${b}=${QUOTE_SHA[$b]}"
+done
+
+export PCR_VALUES_BY_BANK="$(python3 - <<'PY'
+import os, json
+present=(os.environ.get("BANKS_PRESENT","") or "").split(",")
+out={}
+for b in present:
+    if not b: continue
+    out[b]=json.loads(os.environ.get(f"BANK_JSON__{b}","{}") or "{}")
+print(json.dumps(out, sort_keys=True, separators=(",",":")))
+PY
+)"
+
+export PER_BANK_DIGESTS="$(python3 - <<'PY'
+import os, json
+present=(os.environ.get("BANKS_PRESENT","") or "").split(",")
+out={}
+for b in present:
+    d=os.environ.get(f"BANK_DIGEST__{b}","")
+    if d: out[b]="sha256:"+d
+print(json.dumps(out, sort_keys=True, separators=(",",":")))
+PY
+)"
+
+export QUOTES_BY_BANK="$(python3 - <<'PY'
+import os, json
+present=(os.environ.get("BANKS_PRESENT","") or "").split(",")
+out={}
+for b in present:
+    f=os.environ.get(f"QUOTE_REF__{b}","")
+    h=os.environ.get(f"QUOTE_SHA__{b}","")
+    if f:
+        out[b]={"file":f,"sha256":"sha256:"+h if h else ""}
+print(json.dumps(out, sort_keys=True, separators=(",",":")))
+PY
+)"
+
+export CANON_OBJ="$(python3 - <<'PY'
+import os, json, hashlib
+obj={
+  "schema":"AEVUM:TPM:PCRMAP:V1",
+  "timestamp_utc": os.environ.get("TS",""),
+  "hostname": os.environ.get("HOST",""),
+  "kernel": os.environ.get("KERNEL",""),
+  "secure_boot": os.environ.get("SECURE_BOOT","unknown"),
+  "pcrs": [int(x) for x in (os.environ.get("PCRS","") or "").split(",") if x],
+  "banks_requested": [b for b in (os.environ.get("BANKS_REQUESTED","") or "").split(",") if b],
+  "banks_present": [b for b in (os.environ.get("BANKS_PRESENT","") or "").split(",") if b],
+  "pcr_values_by_bank": json.loads(os.environ.get("PCR_VALUES_BY_BANK","{}") or "{}"),
+  "per_bank_digest_sha256": json.loads(os.environ.get("PER_BANK_DIGESTS","{}") or "{}"),
+  "quotes_by_bank": json.loads(os.environ.get("QUOTES_BY_BANK","{}") or "{}"),
+  "tpm_pcr_policy_sha256": ("sha256:"+os.environ.get("POLICY_SHA","")) if os.environ.get("POLICY_SHA","") else "",
+  "tpm_pcr_policy_path": os.environ.get("POLICY_REF",""),
+}
+canon=json.dumps(obj, sort_keys=True, separators=(",",":")).encode("utf-8")
+obj["combined_digest_sha256"]="sha256:"+hashlib.sha256(canon).hexdigest()
+print(json.dumps(obj, indent=2, sort_keys=True))
+PY
+)"
+
+mapfile="${OUTDIR}/pcrmap_${ts}.json"
+printf "%s\n" "${CANON_OBJ}" > "${mapfile}"
+chmod 0600 "${mapfile}" || true
+
+if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+  h="$(sha256sum "${mapfile}" | awk '{print $1}')"
+  /opt/aevum-tools/bin/aevum-receipt note "tpm pcr map" component=tpm file="${mapfile}" manifest="sha256:${h}" banks="${BANKS_PRESENT}" combined_digest="$(python3 - <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("combined_digest_sha256",""))
+PY
+"${mapfile}")" || true
+fi
+
+echo "OK: ${mapfile}"

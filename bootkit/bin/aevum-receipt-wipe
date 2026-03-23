@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# aevum-receipt-wipe (bootkit/operator)
+# Unstoppable operator action surface for:
+#  - receipts wipe (evidence epoch bump)
+#  - factory reset (revert to "just the 3 zips" + preserve bootkit trust + operator log)
+#  - rollback apply (select staged bundle and apply)
+#
+# This command is NOT receipt-gated. It MUST log out-of-band.
+
+BASE="/var/lib/aevum"
+INSTANCE="workstation"
+INST_DIR="${BASE}/${INSTANCE}"
+
+OPDIR="/var/lib/aevum/operator"
+ACTIONS_LOG="${OPDIR}/actions.jsonl"
+EVID_EPOCH_FILE="${OPDIR}/evidence_epoch.json"
+ID_EPOCH_FILE="${OPDIR}/identity_epoch.json"
+TRUST_EPOCH_FILE="/etc/aevum/trust/trust_epoch.json"
+PUBKEY_FILE="/etc/aevum/trust/release_pubkey.ed25519.b64"
+
+STAGE_BASE="/srv/aevum-hot/bootstrap/stage"
+
+MODE=""
+BUNDLE_ID=""
+WIPE_IDENTITY=0
+YES=0
+REQUIRE_LOG=0
+
+usage() {
+  cat <<EOF
+Usage:
+  sudo aevum-receipt-wipe                 # interactive (y/n/i/o)
+  sudo aevum-receipt-wipe --mode receipts_wipe [--wipe-identity] [--yes]
+  sudo aevum-receipt-wipe --mode factory_reset [--wipe-identity] [--yes]
+  sudo aevum-receipt-wipe --mode rollback_apply --bundle-id <ID> [--yes]
+
+Flags:
+  --wipe-identity   Also delete identity material (increments identity epoch).
+  --yes             Non-interactive confirmation.
+  --require-log     Fail if out-of-band operator log cannot be written.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mode) MODE="${2:-}"; shift 2;;
+    --bundle-id) BUNDLE_ID="${2:-}"; shift 2;;
+    --wipe-identity) WIPE_IDENTITY=1; shift;;
+    --yes) YES=1; shift;;
+    --require-log) REQUIRE_LOG=1; shift;;
+    -h|--help) usage; exit 0;;
+    *) echo "ERROR: unknown arg: $1" >&2; usage; exit 2;;
+  esac
+done
+
+install -d -m 0700 "$OPDIR" >/dev/null 2>&1 || true
+
+TS_UTC="$(date -u +%Y-%m-%dT%H%M%SZ)"
+
+confirm() {
+  local phrase="$1"
+  if [[ "$YES" -eq 1 ]]; then return 0; fi
+  echo -n "Type ${phrase} to continue: "
+  read -r c || true
+  [[ "$c" == "$phrase" ]]
+}
+
+# Determine interactive mode if not set
+if [[ -z "$MODE" ]]; then
+  echo -n "Delete All Receipts: (y)es / (n)o / (i) factory reset / (o) rollback ? "
+  read -r ans || true
+  case "$ans" in
+    y|Y) MODE="receipts_wipe";;
+    n|N|"") echo "No-op."; exit 0;;
+    i|I) MODE="factory_reset";;
+    o|O) MODE="rollback_apply";;
+    *) echo "No-op."; exit 0;;
+  esac
+fi
+
+# Confirm with hard phrases
+case "$MODE" in
+  receipts_wipe) confirm "WIPE" || { echo "Aborted."; exit 0; };;
+  factory_reset) confirm "RESET" || { echo "Aborted."; exit 0; };;
+  rollback_apply) confirm "ROLLBACK" || { echo "Aborted."; exit 0; };;
+  *) echo "ERROR: invalid mode: $MODE" >&2; usage; exit 2;;
+esac
+
+read_epochs() {
+python3 - <<'PY' "$TRUST_EPOCH_FILE" "$EVID_EPOCH_FILE" "$ID_EPOCH_FILE" "$PUBKEY_FILE"
+import json,sys,os,hashlib,base64
+def read_epoch(p):
+    if not os.path.exists(p): return 0
+    try:
+        d=json.load(open(p,"r",encoding="utf-8"))
+        return int(d.get("epoch",0))
+    except Exception:
+        return 0
+def read_key_id(pubf):
+    if not os.path.exists(pubf): return "sha256:"+"0"*64
+    try:
+        raw=base64.b64decode(open(pubf,"rb").read().strip(), validate=True)
+        if len(raw)!=32: return "sha256:"+"0"*64
+        return "sha256:"+hashlib.sha256(raw).hexdigest()
+    except Exception:
+        return "sha256:"+"0"*64
+te=read_epoch(sys.argv[1])
+ee=read_epoch(sys.argv[2])
+ie=read_epoch(sys.argv[3])
+kid=read_key_id(sys.argv[4])
+print(te,ee,ie,kid)
+PY
+}
+
+write_epoch() {
+  local kind="$1" p="$2" val="$3"
+  local tmp
+  tmp="$(mktemp /tmp/aevum_epoch.XXXXXX)"
+  python3 - <<'PY' "$tmp" "$kind" "$val" "$TS_UTC"
+import json,sys
+p=sys.argv[1]
+out={"epoch_kind":sys.argv[2],"epoch":int(sys.argv[3]),"updated_utc":sys.argv[4]}
+open(p,"w",encoding="utf-8").write(json.dumps(out, indent=2)+"\n")
+PY
+  install -m 0600 "$tmp" "$p"
+  rm -f "$tmp"
+}
+
+append_action() {
+  local action="$1" outcome="$2" details_json="$3"
+  python3 - <<'PY' "$ACTIONS_LOG" "$TS_UTC" "$action" "$outcome" "$details_json" "$PRE_TE" "$PRE_EE" "$PRE_IE" "$PRE_KID" "$POST_TE" "$POST_EE" "$POST_IE" "$POST_KID"
+import json,os,sys
+log=sys.argv[1]
+ts=sys.argv[2]
+action=sys.argv[3]
+outcome=sys.argv[4]
+details=json.loads(sys.argv[5])
+pre_te=int(sys.argv[6]); pre_ee=int(sys.argv[7]); pre_ie=int(sys.argv[8]); pre_kid=sys.argv[9]
+post_te=int(sys.argv[10]); post_ee=int(sys.argv[11]); post_ie=int(sys.argv[12]); post_kid=sys.argv[13]
+sudo_user=os.environ.get("SUDO_USER") or os.environ.get("USER") or "unknown"
+uid=os.getuid()
+rec={
+  "ts_utc": ts,
+  "action_kind": action,
+  "actor": {"sudo_user": sudo_user, "uid": uid},
+  "pre_state": {"trust_epoch": pre_te, "evidence_epoch": pre_ee, "identity_epoch": pre_ie, "release_key_id": pre_kid},
+  "post_state": {"trust_epoch": post_te, "evidence_epoch": post_ee, "identity_epoch": post_ie, "release_key_id": post_kid},
+  "outcome": outcome,
+  "details": details
+}
+os.makedirs(os.path.dirname(log), exist_ok=True)
+with open(log,"a",encoding="utf-8") as f:
+  f.write(json.dumps(rec, separators=(",",":"))+"\n")
+  f.flush(); os.fsync(f.fileno())
+PY
+}
+
+# Stop Aevum best-effort
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl stop 'aevum-*.timer' >/dev/null 2>&1 || true
+  systemctl stop 'aevum-*.service' >/dev/null 2>&1 || true
+  systemctl reset-failed >/dev/null 2>&1 || true
+fi
+
+read -r PRE_TE PRE_EE PRE_IE PRE_KID < <(read_epochs)
+
+POST_TE="$PRE_TE"
+POST_EE="$PRE_EE"
+POST_IE="$PRE_IE"
+POST_KID="$PRE_KID"
+
+OUTCOME="ok"
+targets=()
+
+do_receipts_wipe() {
+  targets+=("${INST_DIR}/accurate" "${INST_DIR}/receipts" "${INST_DIR}/payloads" "${INST_DIR}/state" "${INST_DIR}/boot" "${INST_DIR}/tpm_sign")
+  rm -rf "${INST_DIR}/accurate" || true
+  rm -rf "${INST_DIR}/receipts" "${INST_DIR}/payloads" "${INST_DIR}/state" || true
+  rm -rf "${INST_DIR}/boot" || true
+  rm -rf "${INST_DIR}/tpm_sign" || true
+}
+
+do_identity_wipe() {
+  targets+=("${INST_DIR}/identity" "${INST_DIR}/id")
+  rm -rf "${INST_DIR}/identity" "${INST_DIR}/id" || true
+}
+
+do_factory_reset() {
+  do_receipts_wipe
+  # Remove bootstrap-installed surfaces (preserve /etc/aevum/mode + /etc/aevum/trust + operator log)
+  targets+=("/opt/aevum-tools" "/usr/local/sbin/aevum-*" "/usr/local/bin/aevum-*" "/etc/systemd/system/aevum-*")
+  rm -rf /opt/aevum-tools || true
+  rm -f /usr/local/sbin/aevum-* /usr/local/bin/aevum-* || true
+  rm -f /etc/systemd/system/aevum-* || true
+
+  # Clean /etc/aevum excluding bootkit-owned trust + mode
+  if [[ -d /etc/aevum ]]; then
+    targets+=("/etc/aevum/* (except trust/, mode)")
+    find /etc/aevum -mindepth 1 -maxdepth 1 \
+      ! -name 'trust' ! -name 'mode' \
+      -exec rm -rf {} + >/dev/null 2>&1 || true
+  fi
+}
+
+do_rollback_apply() {
+  if [[ -z "$BUNDLE_ID" ]]; then
+    echo "Available staged bundles:"
+    ls -1 "$STAGE_BASE" 2>/dev/null | sed 's/^/  - /' || true
+    echo -n "Enter exact bundle id: "
+    read -r BUNDLE_ID || true
+  fi
+  if [[ -z "$BUNDLE_ID" ]]; then
+    echo "ERROR: no bundle id selected" >&2
+    return 2
+  fi
+  local target="${STAGE_BASE}/${BUNDLE_ID}"
+  if [[ ! -d "$target" ]]; then
+    echo "ERROR: bundle not found: $target" >&2
+    return 2
+  fi
+  ln -sfn "$target" "${STAGE_BASE}/current"
+  echo "$target" > "${STAGE_BASE}/CURRENT_BUNDLE" || true
+  targets+=("${STAGE_BASE}/current -> ${target}")
+
+  # Apply
+  if command -v aevum-bootstrap-apply >/dev/null 2>&1; then
+    sudo aevum-bootstrap-apply || return 3
+  elif [[ -x "${target}/extract/bootstrap/pack/bin/aevum-workstation-apply" ]]; then
+    sudo "${target}/extract/bootstrap/pack/bin/aevum-workstation-apply" || return 3
+  else
+    echo "WARN: apply script not found for rollback target; staged only." >&2
+  fi
+}
+
+case "$MODE" in
+  receipts_wipe)
+    do_receipts_wipe || OUTCOME="partial"
+    POST_EE=$((PRE_EE+1))
+    write_epoch "evidence" "$EVID_EPOCH_FILE" "$POST_EE" || OUTCOME="partial"
+    ;;
+  factory_reset)
+    do_factory_reset || OUTCOME="partial"
+    POST_EE=$((PRE_EE+1))
+    write_epoch "evidence" "$EVID_EPOCH_FILE" "$POST_EE" || OUTCOME="partial"
+    ;;
+  rollback_apply)
+    do_rollback_apply || OUTCOME="partial"
+    ;;
+esac
+
+if [[ "$WIPE_IDENTITY" -eq 1 && "$MODE" != "rollback_apply" ]]; then
+  do_identity_wipe || OUTCOME="partial"
+  POST_IE=$((PRE_IE+1))
+  write_epoch "identity" "$ID_EPOCH_FILE" "$POST_IE" || OUTCOME="partial"
+fi
+
+# Best-effort TPM signing init if tools exist
+TPM_INIT="/opt/aevum-tools/bin/aevum-tpm-sign-init"
+if [[ -x "$TPM_INIT" && "$MODE" != "rollback_apply" ]]; then
+  "$TPM_INIT" >/dev/null 2>&1 || true
+fi
+
+# Restart Aevum best-effort
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl start aevum-identity-bootstrap-workstation.service >/dev/null 2>&1 || true
+  systemctl start 'aevum-*.timer' >/dev/null 2>&1 || true
+fi
+
+# Details JSON (bounded reason + targets)
+details_json="$(printf "%s\n" "${targets[@]}" | python3 - <<'PY' "$MODE" "$BUNDLE_ID" "$WIPE_IDENTITY"
+import json,sys
+mode=sys.argv[1]
+bundle=sys.argv[2] if len(sys.argv)>2 else ""
+wipe_id=int(sys.argv[3]) if len(sys.argv)>3 else 0
+targets=[l.strip() for l in sys.stdin.read().splitlines() if l.strip()]
+out={"bounded_reason":"operator_initiated","targets":targets}
+if bundle: out["selected_bundle_id"]=bundle
+out["identity_wiped"]=bool(wipe_id)
+print(json.dumps(out,separators=(",",":")))
+PY
+)"
+
+append_action "$MODE" "$OUTCOME" "$details_json" || {
+  echo "ERROR: failed to write operator log." >&2
+  if [[ "$REQUIRE_LOG" -eq 1 ]]; then exit 3; fi
+}
+
+echo "OK: ${MODE}"
+echo "  evidence_epoch: ${PRE_EE} -> ${POST_EE}"
+echo "  identity_epoch: ${PRE_IE} -> ${POST_IE}"

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Aevum module harvest periodically
+
+[Timer]
+OnBootSec=300s
+OnUnitActiveSec=30m
+AccuracySec=5m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

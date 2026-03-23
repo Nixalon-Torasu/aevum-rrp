@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Aevum LUKS sweep snapshot hourly (non-gating)
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

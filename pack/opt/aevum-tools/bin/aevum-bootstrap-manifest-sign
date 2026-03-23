@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# aevum-bootstrap-manifest-sign (v0.1)
+# Signs /etc/aevum/bootstrap_manifest.sha256 with the local GPG signer key.
+# Non-gating: exits 0 if signer missing.
+
+MAN="/etc/aevum/bootstrap_manifest.sha256"
+OUT="/etc/aevum/bootstrap_manifest.sha256.asc"
+GNUPGHOME_SIGN="${GNUPGHOME_SIGN:-/var/lib/aevum/workstation/keys/gpg_signing}"
+FPR="${FPR:-}"
+
+[[ "$(id -u)" -eq 0 ]] || { echo "Run as root." >&2; exit 2; }
+command -v gpg >/dev/null 2>&1 || { echo "INFO: gpg missing; skip"; exit 0; }
+[[ -f "${MAN}" ]] || { echo "INFO: manifest missing; skip"; exit 0; }
+
+if [[ -z "${FPR}" ]]; then
+  FPR="$(gpg --homedir "${GNUPGHOME_SIGN}" --list-secret-keys --with-colons 2>/dev/null | awk -F: '/^fpr:/{print $10; exit}')"
+fi
+[[ -n "${FPR}" ]] || { echo "INFO: no signer key; run aevum-gpg-signer-init"; exit 0; }
+
+gpg --homedir "${GNUPGHOME_SIGN}" --batch --yes --pinentry-mode loopback --passphrase ""   --local-user "${FPR}" --armor --detach-sign -o "${OUT}" "${MAN}" >/dev/null 2>&1 || true
+chmod 0644 "${OUT}" || true
+
+if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+  h="$(sha256sum "${OUT}" | awk '{print $1}')"
+  /opt/aevum-tools/bin/aevum-receipt note "bootstrap manifest signed" component=gpg sig="${OUT}" sig_sha256="sha256:${h}" || true
+fi
+echo "OK: ${OUT}"

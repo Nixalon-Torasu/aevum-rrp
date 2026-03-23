@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Aevum Workstation Apply (Workstation)
+# Applies the CURRENT bootstrap tree to the live system (files + systemd).
+# SAFE DEFAULTS:
+#   - Does not force firewall "locked" unless you explicitly request it.
+#   - Idempotent: re-running should converge, not duplicate.
+
+CURRENT="${AEVUM_BOOTSTRAP_CURRENT:-/srv/aevum-hot/bootstrap/current}"
+PACK="${CURRENT}/pack"
+LOGDIR="${AEVUM_BOOTSTRAP_LOGDIR:-/srv/aevum-hot/bootstrap/logs}"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+LOG="${LOGDIR}/bootstrap_apply_${STAMP}.log"
+
+mkdir -p "${LOGDIR}"
+exec > >(tee -a "${LOG}") 2>&1
+
+say() { echo "[$(date -u +%H:%M:%SZ)] $*"; }
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+[[ "${EUID}" -eq 0 ]] || die "Run as root (sudo aevum-bootstrap-apply)."
+
+[[ -d "${PACK}" ]] || die "Missing pack/ under ${CURRENT}. Did you run aevum-bootstrap-update?"
+
+say "== AEVUM BOOTSTRAP APPLY [${STAMP}] =="
+say "Current:  ${CURRENT}"
+say "Pack:     ${PACK}"
+say "Log:      ${LOG}"
+
+# Helper: sync a tree into place
+sync_tree() {
+  local src="$1" dst="$2"
+  [[ -d "${src}" ]] || return 0
+  mkdir -p "${dst}"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete "${src}/" "${dst}/"
+  else
+    # Fallback: copy to temp then swap (avoids half-written dirs)
+    local tmp="${dst}.tmp.${STAMP}"
+    rm -rf "${tmp}"
+    mkdir -p "${tmp}"
+    cp -a "${src}/." "${tmp}/"
+    rm -rf "${dst}"
+    mv "${tmp}" "${dst}"
+  fi
+}
+
+# Helper: seed a tree/file only if destination does not exist (no deletes)
+seed_tree() {
+  local src="$1" dst="$2"
+  [[ -d "${src}" ]] || return 0
+  if [[ -e "${dst}" ]]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "${dst}")"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a "${src}/" "${dst}/"
+  else
+    (cd "${src}" && tar -cf - .) | (cd "${dst}" && tar -xf -)
+  fi
+}
+
+seed_file() {
+  local src="$1" dst="$2"
+  [[ -f "${src}" ]] || return 0
+  if [[ -e "${dst}" ]]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "${dst}")"
+  cp -a "${src}" "${dst}"
+}
+
+# --- Preflight 1: pack gate (ensures pack contains required execs referenced by units)
+if [[ -x "${PACK}/gitops/preflight_systemd_gate.sh" ]]; then
+  say "[preflight] systemd gate (pack mode)..."
+  AEVUM_SYSTEMD_GATE_MODE=pack bash "${PACK}/gitops/preflight_systemd_gate.sh" "${PACK}/systemd" "${PACK}" \
+    || die "systemd pack-gate failed (broken zip / missing files)."
+else
+  die "Missing ${PACK}/gitops/preflight_systemd_gate.sh"
+fi
+
+
+# --- Quiesce (stop Aevum units before overwriting executables/units)
+say "[quiesce] stopping aevum timers/services (best-effort) ..."
+if command -v systemctl >/dev/null 2>&1; then
+  mapfile -t _TIMERS < <(find "${PACK}/systemd" -maxdepth 1 -type f -name 'aevum-*.timer' -printf '%f
+' 2>/dev/null | sort || true)
+  mapfile -t _SERVICES < <(find "${PACK}/systemd" -maxdepth 1 -type f -name 'aevum-*.service' -printf '%f
+' 2>/dev/null | sort || true)
+  for u in "${_TIMERS[@]}"; do systemctl stop "$u" >/dev/null 2>&1 || true; done
+  for u in "${_SERVICES[@]}"; do systemctl stop "$u" >/dev/null 2>&1 || true; done
+  systemctl reset-failed >/dev/null 2>&1 || true
+fi
+
+# --- Install: /opt/aevum-tools (tools)
+say "[install] /opt/aevum-tools..."
+sync_tree "${PACK}/opt/aevum-tools" "/opt/aevum-tools"
+chmod -R a+rX "/opt/aevum-tools" || true
+
+# --- Install: /usr/local/(sbin|bin)
+say "[install] /usr/local..."
+sync_tree "${PACK}/usr/local/sbin" "/usr/local/sbin"
+sync_tree "${PACK}/usr/local/bin"  "/usr/local/bin"
+chmod -R a+rX "/usr/local/sbin" "/usr/local/bin" || true
+
+# --- Install: /etc config surfaces
+say "[install] /etc (aevum policy + sysctl/tmpfiles/profile.d/nftables.d)..."
+# Ensure base dir
+mkdir -p /etc/aevum
+
+# Bootkit-owned (MUST NOT be overwritten here):
+#   /etc/aevum/mode
+#   /etc/aevum/trust/*
+#
+# GitOps-owned policy dirs (seed-only; GitOps converges later):
+seed_tree "${PACK}/etc/aevum/registry"        "/etc/aevum/registry"
+seed_tree "${PACK}/etc/aevum/bundles.d"       "/etc/aevum/bundles.d"
+seed_tree "${PACK}/etc/aevum/egress_profiles.d" "/etc/aevum/egress_profiles.d"
+
+# Bootstrap-owned default config files (seed-only unless you intentionally manage them elsewhere):
+seed_file "${PACK}/etc/aevum/hardening.conf"     "/etc/aevum/hardening.conf"
+seed_file "${PACK}/etc/aevum/firewall_mode"      "/etc/aevum/firewall_mode"
+seed_file "${PACK}/etc/aevum/ssh_allow_cidrs"    "/etc/aevum/ssh_allow_cidrs"
+seed_file "${PACK}/etc/aevum/binary_harvest.conf" "/etc/aevum/binary_harvest.conf"
+
+# Bootstrap-owned: schemas/ownership docs (seed-only)
+seed_tree "${PACK}/etc/aevum/ownership"       "/etc/aevum/ownership"
+seed_tree "${PACK}/etc/aevum/schemas"         "/etc/aevum/schemas"
+
+# System-wide surfaces (bootstrap-owned)
+sync_tree "${PACK}/etc/sysctl.d"     "/etc/sysctl.d"
+sync_tree "${PACK}/etc/tmpfiles.d"   "/etc/tmpfiles.d"
+sync_tree "${PACK}/etc/profile.d"    "/etc/profile.d"
+sync_tree "${PACK}/etc/nftables.d"   "/etc/nftables.d"
+
+# Audit rules templates -> /etc/audit/rules.d
+if [[ -d "${PACK}/etc/audit" ]]; then
+  say "[install] audit rules -> /etc/audit/rules.d ..."
+  mkdir -p /etc/audit/rules.d
+  cp -a "${PACK}/etc/audit/." /etc/audit/rules.d/ || true
+fi
+
+# --- Install: systemd units
+say "[install] systemd units -> /etc/systemd/system ..."
+sync_tree "${PACK}/systemd" "/etc/systemd/system"
+
+# Ensure tmpfiles create /run/aevum even before first service starts
+if command -v systemd-tmpfiles >/dev/null 2>&1; then
+  say "[install] systemd-tmpfiles --create ..."
+  systemd-tmpfiles --create || true
+fi
+
+# Reload systemd
+say "[systemd] daemon-reload ..."
+systemctl daemon-reload
+
+# --- Preflight 2: system gate (units reference live executables)
+say "[preflight] systemd gate (system mode)..."
+AEVUM_SYSTEMD_GATE_MODE=system bash "${PACK}/gitops/preflight_systemd_gate.sh" "/etc/systemd/system" "${PACK}" \
+  || die "systemd system-gate failed. Live install is inconsistent."
+
+# Apply sysctl (best-effort)
+if command -v sysctl >/dev/null 2>&1; then
+  say "[sysctl] applying /etc/sysctl.d ..."
+  sysctl --system >/dev/null 2>&1 || true
+fi
+
+# Enable base services/timers (non-destructive; firewall default is install-safe)
+say "[systemd] enabling core services/timers ..."
+ENABLE_UNITS=(
+  aevum-identity-bootstrap-workstation.service
+  aevum-registry-seal.service
+  aevum-registry-verify.timer
+  aevum-tpm-anchor.timer
+  aevum-tpm-eventlog-capture.timer
+  aevum-tpm-pcr-snapshot.timer
+  aevum-tpm-policy-sync.timer
+  aevum-tpm-receipt-policy-sync.timer
+  aevum-workstation-timechain.service
+  aevum-workstation-observer.service
+  aevum-rrp-printerd.service
+  aevum-workstation-journald-summary.timer
+  aevum-workstation-module-harvest.timer
+  aevum-workstation-binary-harvest.timer
+  aevum-healthcheck.timer
+  aevum-segment.timer
+  aevum-snapshot.timer
+  aevum-audit-summarize.timer
+  aevum-egress-observe-collect.timer
+  aevum-controlplane-update.timer
+  aevum-apt-capture.timer
+  aevum-drift-scan.timer
+  aevum-secureboot-capture.timer
+  aevum-verify-continuity.timer
+)
+
+for u in "${ENABLE_UNITS[@]}"; do
+  if systemctl list-unit-files --type=service --type=timer | awk '{print $1}' | grep -qx "${u}"; then
+    systemctl enable "${u}" >/dev/null 2>&1 || true
+  fi
+done
+
+# Start identity first (it is the root key for signatures)
+say "[systemd] start identity bootstrap (non-fatal) ..."
+systemctl start aevum-identity-bootstrap-workstation.service >/dev/null 2>&1 || true
+systemctl start aevum-registry-seal.service >/dev/null 2>&1 || true
+
+# Start always-on services
+say "[systemd] start always-on daemons ..."
+systemctl restart aevum-workstation-timechain.service >/dev/null 2>&1 || true
+systemctl restart aevum-workstation-observer.service >/dev/null 2>&1 || true
+systemctl restart aevum-rrp-printerd.service >/dev/null 2>&1 || true
+
+# Start timers
+say "[systemd] start timers ..."
+systemctl start "${ENABLE_UNITS[@]}" >/dev/null 2>&1 || true
+
+# Firewall mode is controlled by environment to avoid locking you out.
+#   export AEVUM_FIREWALL_MODE=install|locked|open
+# If you want to apply firewall rules now, explicitly run:
+#   sudo AEVUM_FIREWALL_MODE=install /opt/aevum-tools/bin/aevum-firewallctl install
+if [[ "${AEVUM_FIREWALL_MODE:-}" != "" ]]; then
+  if [[ -x /opt/aevum-tools/bin/aevum-firewallctl ]]; then
+    say "[firewall] applying firewall mode: ${AEVUM_FIREWALL_MODE}"
+    /opt/aevum-tools/bin/aevum-firewallctl "${AEVUM_FIREWALL_MODE}" || true
+  else
+    say "[firewall] firewallctl missing; skipping"
+  fi
+fi
+
+# Postflight (bounded checks)
+if [[ -x "${PACK}/gitops/postflight_check.sh" ]]; then
+  say "[postflight] running bounded checks ..."
+  BASE="/var/lib/aevum/workstation" bash "${PACK}/gitops/postflight_check.sh" || true
+fi
+
+say "== DONE =="
+say "Log saved at: ${LOG}"
+
+# Exit nonzero if any aevum units are failed (so automation catches it)
+if systemctl --failed --no-legend | grep -qi aevum; then
+  say "OVERALL: FAIL (some aevum units failed). Run: systemctl --failed | grep -i aevum"
+  exit 2
+fi
+
+say "OVERALL: PASS"
+exit 0

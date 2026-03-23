@@ -1,0 +1,162 @@
+{
+  "$id": "AEVUM:SCHEMA:IDENTITY:DEVICE:V1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "bootstrap": {
+      "type": "object"
+    },
+    "canon_digest": {
+      "description": "Optional canon bundle digest. MUST NOT be required for basic function.",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "derivation_policy": {
+      "type": "object"
+    },
+    "device": {
+      "additionalProperties": true,
+      "properties": {
+        "capture_device_hex": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "hardware_fingerprint": {
+          "type": "string"
+        },
+        "hostname": {
+          "type": "string"
+        },
+        "identity_id": {
+          "type": "string"
+        },
+        "instance_id": {
+          "type": "string"
+        },
+        "machine_id": {
+          "type": "string"
+        },
+        "platform": {
+          "type": "object"
+        },
+        "subject_id_hex": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity_id",
+        "instance_id",
+        "subject_id_hex",
+        "capture_device_hex"
+      ],
+      "type": "object"
+    },
+    "keys": {
+      "additionalProperties": true,
+      "properties": {
+        "device_signing_key": {
+          "additionalProperties": true,
+          "properties": {
+            "alg": {
+              "const": "Ed25519"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "kid": {
+              "pattern": "^ed25519:sha256:[0-9a-f]{16}$",
+              "type": "string"
+            },
+            "public_key_b64": {
+              "type": "string"
+            },
+            "storage": {
+              "type": "object"
+            },
+            "usage": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kid",
+            "alg",
+            "public_key_b64",
+            "created_at",
+            "usage",
+            "storage"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "device_signing_key"
+      ],
+      "type": "object"
+    },
+    "policy_version": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "AEVUM:IDENTITY:DEVICE:V1"
+    },
+    "self_signature": {
+      "additionalProperties": true,
+      "properties": {
+        "alg": {
+          "const": "Ed25519"
+        },
+        "canonicalization": {
+          "type": "string"
+        },
+        "kid": {
+          "pattern": "^ed25519:sha256:[0-9a-f]{16}$",
+          "type": "string"
+        },
+        "sig_b64": {
+          "type": "string"
+        },
+        "signed_at": {
+          "type": "string"
+        },
+        "signed_fields": {
+          "const": "ALL_FIELDS_EXCEPT_self_signature"
+        }
+      },
+      "required": [
+        "alg",
+        "kid",
+        "sig_b64",
+        "signed_fields",
+        "canonicalization",
+        "signed_at"
+      ],
+      "type": "object"
+    },
+    "trust_anchors": {
+      "type": "array"
+    },
+    "version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "version",
+    "created_at",
+    "device",
+    "keys",
+    "self_signature"
+  ],
+  "title": "Aevum Device Identity (Year-1)",
+  "type": "object"
+}

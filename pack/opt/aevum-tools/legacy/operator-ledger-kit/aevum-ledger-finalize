@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+import json, hashlib, os, subprocess
+from pathlib import Path
+from datetime import datetime, timezone, timedelta
+
+LEDGER_DIR   = Path("/var/lib/aevum/ledger")
+BLOCKS_DIR   = LEDGER_DIR / "blocks"
+RECEIPTS_DIR = LEDGER_DIR / "receipts"
+STATE_FILE   = LEDGER_DIR / "state.json"
+CHAIN_LOG    = LEDGER_DIR / "chain.log"
+
+GENESIS_PAYLOAD = BLOCKS_DIR / "000000-genesis" / "payload.json"
+
+INTERVAL_SECONDS = 60
+SIGN_KEY = Path.home() / ".ssh" / "aevum_ledger_ed25519"
+SIGNER_ID = "torasu"
+
+def utcnow():
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+def parse_utc(s: str) -> datetime:
+    # expects ...Z
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    return datetime.fromisoformat(s).astimezone(timezone.utc).replace(microsecond=0)
+
+def iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+def floor_to_interval(dt: datetime) -> datetime:
+    epoch = int(dt.timestamp())
+    floored = epoch - (epoch % INTERVAL_SECONDS)
+    return datetime.fromtimestamp(floored, tz=timezone.utc).replace(microsecond=0)
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def sha256_bytes(b: bytes) -> bytes:
+    return hashlib.sha256(b).digest()
+
+def merkle_root_hex(leaf_hexes):
+    # deterministic root; if no leaves -> sha256("")
+    if not leaf_hexes:
+        return hashlib.sha256(b"").hexdigest()
+    level = [bytes.fromhex(x) for x in leaf_hexes]
+    while len(level) > 1:
+        if len(level) % 2 == 1:
+            level.append(level[-1])
+        nxt = []
+        for i in range(0, len(level), 2):
+            nxt.append(sha256_bytes(level[i] + level[i+1]))
+        level = nxt
+    return level[0].hex()
+
+def last_chain_entry():
+    # chain.log lines: height timestamp block_hash [prev_hash ...]
+    if not CHAIN_LOG.exists():
+        raise SystemExit(f"Missing {CHAIN_LOG}")
+    last = None
+    with CHAIN_LOG.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                last = line
+    if not last:
+        raise SystemExit("chain.log is empty")
+    parts = last.split()
+    height = int(parts[0])
+    block_hash = parts[2]
+    prev_hash = parts[3] if len(parts) >= 4 else None
+    return height, block_hash, prev_hash
+
+def load_state():
+    if STATE_FILE.exists():
+        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+
+    if not GENESIS_PAYLOAD.exists():
+        raise SystemExit(f"Missing genesis payload at {GENESIS_PAYLOAD}")
+
+    genesis = json.loads(GENESIS_PAYLOAD.read_text(encoding="utf-8"))
+    created = parse_utc(genesis["created_utc"])
+
+    # Start timeblocks from the minute boundary at/just before genesis
+    start = floor_to_interval(created)
+
+    h, last_hash, _ = last_chain_entry()
+    return {
+        "last_height": h,
+        "last_block_hash": last_hash,
+        "last_window_end_utc": iso(start)
+    }
+
+def save_state(st):
+    tmp = STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(st, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(STATE_FILE)
+
+def receipt_hash_and_created(path: Path):
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+        created = parse_utc(obj["created_utc"])
+    except Exception:
+        return None
+
+    # Canonicalize receipt before hashing (sort keys)
+    canon = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    rh = hashlib.sha256(canon).hexdigest()
+    return rh, created
+
+def collect_receipt_hashes(t0: datetime, t1: datetime):
+    # scan only the date dirs that can contain receipts for this window
+    days = {t0.strftime("%Y%m%d"), t1.strftime("%Y%m%d")}
+    found = []
+    for d in sorted(days):
+        dd = RECEIPTS_DIR / d
+        if not dd.is_dir():
+            continue
+        for p in dd.glob("*.json"):
+            rc = receipt_hash_and_created(p)
+            if not rc:
+                continue
+            rh, created = rc
+            if t0 <= created < t1:
+                found.append((created, rh, p.name))
+    # deterministic ordering: by created time then hash
+    found.sort(key=lambda x: (x[0], x[1]))
+    return [rh for _, rh, _ in found], found
+
+def write_sha256_file(sum_path: Path, target_path: Path, hexhash: str):
+    sum_path.write_text(f"{hexhash}  {target_path}\n", encoding="utf-8")
+
+def sign_sha256(sum_path: Path):
+    # produces sum_path + ".sig"
+    subprocess.run(
+        ["ssh-keygen", "-Y", "sign", "-f", str(SIGN_KEY), "-n", "file", str(sum_path)],
+        check=True
+    )
+
+def append_chain(height: int, t1: datetime, block_hash: str, prev_hash: str, t0: datetime, leaf_count: int, merkle_root: str):
+    line = f"{height} {iso(t1)} {block_hash} {prev_hash} {iso(t0)} {iso(t1)} {leaf_count} {merkle_root}\n"
+    with CHAIN_LOG.open("a", encoding="utf-8") as f:
+        f.write(line)
+
+def main():
+    st = load_state()
+    last_end = parse_utc(st["last_window_end_utc"])
+    now_end = floor_to_interval(utcnow())
+
+    progressed = False
+
+    while last_end + timedelta(seconds=INTERVAL_SECONDS) <= now_end:
+        t0 = last_end
+        t1 = last_end + timedelta(seconds=INTERVAL_SECONDS)
+
+        leaf_hashes, receipt_rows = collect_receipt_hashes(t0, t1)
+        merkle = merkle_root_hex(leaf_hashes)
+
+        height = int(st["last_height"]) + 1
+        prev_hash = st["last_block_hash"]
+
+        block_dir = BLOCKS_DIR / f"{height:06d}-{t1.strftime('%Y%m%dT%H%M%SZ')}"
+        block_dir.mkdir(parents=True, exist_ok=False)
+
+        payload = {
+            "ledger_version": "aevum.workstation.ledger.v1",
+            "height": height,
+            "kind": "timeblock",
+            "t0_utc": iso(t0),
+            "t1_utc": iso(t1),
+            "leaf_count": len(leaf_hashes),
+            "merkle_root": f"sha256:{merkle}",
+            "prev_block_hash": prev_hash
+        }
+
+        payload_path = block_dir / "payload.json"
+        payload_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        block_hash = sha256_file(payload_path)
+
+        sum_path = block_dir / "payload.json.sha256"
+        write_sha256_file(sum_path, payload_path, block_hash)
+        sign_sha256(sum_path)
+
+        # leaves + human page (book-readable)
+        (block_dir / "leaves.txt").write_text("\n".join(leaf_hashes) + ("\n" if leaf_hashes else ""), encoding="utf-8")
+
+        human = [
+            f"# Aevum Workstation Ledger — Block {height}",
+            "",
+            f"- Window: {iso(t0)} → {iso(t1)}",
+            f"- Prev: {prev_hash}",
+            f"- Block hash: {block_hash}",
+            f"- Leaves: {len(leaf_hashes)}",
+            f"- Merkle root: sha256:{merkle}",
+            "",
+            "## Receipt leaves (created_utc, hash, filename)",
+        ]
+        if receipt_rows:
+            for created, rh, name in receipt_rows:
+                human.append(f"- {iso(created)}  {rh}  {name}")
+        else:
+            human.append("- (none)")
+        (block_dir / "human.md").write_text("\n".join(human) + "\n", encoding="utf-8")
+
+        append_chain(height, t1, block_hash, prev_hash, t0, len(leaf_hashes), f"sha256:{merkle}")
+
+        # advance state
+        st["last_height"] = height
+        st["last_block_hash"] = block_hash
+        st["last_window_end_utc"] = iso(t1)
+        last_end = t1
+        progressed = True
+
+    if progressed:
+        save_state(st)
+
+if __name__ == "__main__":
+    main()

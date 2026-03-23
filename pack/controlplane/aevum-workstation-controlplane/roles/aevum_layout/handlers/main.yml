@@ -1,0 +1,4 @@
+- name: Reload audit rules
+  command: augenrules --load
+  become: true
+  ignore_errors: true

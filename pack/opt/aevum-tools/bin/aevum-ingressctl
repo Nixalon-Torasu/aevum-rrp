@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONF="/etc/aevum/ingressctl.conf"
+[[ -f "$CONF" ]] && source "$CONF"
+
+: "${WAN_IF:=enp37s0f0}"
+: "${LAN_CIDR:=192.168.1.0/24}"
+: "${STATE_FILE:=/var/lib/aevum/attest/state/ingress.state}"
+: "${NFT_FILE:=/etc/nftables.d/aevum-ingress.nft}"
+: "${LOG_PREFIX:=AEVUM_NFT IN_DROP }"
+: "${LOG_RATE:=10/second}"
+: "${ALLOW_SSH_FROM_LAN:=0}"
+: "${SSH_PORT:=22}"
+: "${TAILSCALE_IF:=tailscale0}"
+: "${ALLOW_SSH_FROM_TS:=0}"
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 2; }; }
+need nft
+need sha256sum
+need date
+
+state_hash() { nft list ruleset 2>/dev/null | sha256sum | awk '{print $1}'; }
+
+write_state_file() {
+  local h
+  h="$(state_hash)"
+  mkdir -p "$(dirname "$STATE_FILE")"
+  {
+    echo "timestamp_utc=$(date -u +%Y%m%dT%H%M%SZ)"
+    echo "ruleset_sha256=$h"
+    echo "mode=${1:-unknown}"
+  } > "$STATE_FILE"
+}
+
+receipt() {
+  if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+    /opt/aevum-tools/bin/aevum-receipt "$@"
+  else
+    echo "NOTE: aevum-receipt not found; skipping receipt -> $*"
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  aevum-ingressctl status
+  aevum-ingressctl close
+  aevum-ingressctl lanonly
+  aevum-ingressctl tailscaleonly
+  aevum-ingressctl open <seconds> <port...>
+
+Notes:
+  - close: inbound closed (lo + established/related + ICMP only)
+  - lanonly: allow inbound only from LAN_CIDR (safe-ish baseline)
+  - tailscaleonly: allow inbound only on $TAILSCALE_IF (safe-ish remote admin)
+  - open: temporarily allow LAN inbound to specified ports, then revert to lanonly
+EOF
+}
+
+ensure_table() { nft -f "$NFT_FILE" >/dev/null 2>&1 || true; }
+
+close_all() {
+  ensure_table
+  nft list table inet aevum_ingress >/dev/null 2>&1 || nft -f "$NFT_FILE" >/dev/null 2>&1 || true
+  nft list chain inet aevum_ingress input >/dev/null 2>&1 || nft 'add chain inet aevum_ingress input { type filter hook input priority -100 ; policy drop ; }' >/dev/null 2>&1 || true
+  nft 'flush chain inet aevum_ingress input' >/dev/null 2>&1 || true
+
+  nft 'add rule inet aevum_ingress input ct state established,related accept comment "aevum_established"' >/dev/null 2>&1 || true
+  nft 'add rule inet aevum_ingress input iif "lo" accept comment "aevum_loopback"' >/dev/null 2>&1 || true
+  # Allow ICMP for diagnostics
+  nft 'add rule inet aevum_ingress input ip protocol icmp accept comment "aevum_icmp"' >/dev/null 2>&1 || true
+  nft 'add rule inet aevum_ingress input ip6 nexthdr icmpv6 accept comment "aevum_icmpv6"' >/dev/null 2>&1 || true
+
+  nft "add rule inet aevum_ingress input limit rate ${LOG_RATE} log prefix "${LOG_PREFIX}" flags all counter drop comment "aevum_ingress_logdrop"" >/dev/null 2>&1 || true
+  write_state_file "CLOSE"
+  receipt note "ingress set CLOSE (default deny, ICMP only)" component=ingress ruleset_sha256="$(state_hash)" || true
+}
+
+tailscaleonly() {
+  ensure_table
+  nft list table inet aevum_ingress >/dev/null 2>&1 || nft -f "$NFT_FILE" >/dev/null 2>&1 || true
+  nft list chain inet aevum_ingress input >/dev/null 2>&1 || nft 'add chain inet aevum_ingress input { type filter hook input priority -100 ; policy drop ; }' >/dev/null 2>&1 || true
+  nft 'flush chain inet aevum_ingress input' >/dev/null 2>&1 || true
+
+  nft 'add rule inet aevum_ingress input ct state established,related accept comment "aevum_established"' >/dev/null 2>&1 || true
+  nft 'add rule inet aevum_ingress input iif "lo" accept comment "aevum_loopback"' >/dev/null 2>&1 || true
+
+  if ip link show "$TAILSCALE_IF" >/dev/null 2>&1; then
+    nft "add rule inet aevum_ingress input iif \"$TAILSCALE_IF\" accept comment \"aevum_ts_iface\"" >/dev/null 2>&1 || true
+    # Optional: allow SSH specifically on tailscale
+    if [[ "${ALLOW_SSH_FROM_TS}" == "1" ]]; then
+      nft "insert rule inet aevum_ingress input iif \"$TAILSCALE_IF\" tcp dport $SSH_PORT accept comment \"aevum_ts_ssh_${SSH_PORT}\"" >/dev/null 2>&1 || true
+    fi
+  else
+    echo "WARN: tailscale interface '$TAILSCALE_IF' not present; no inbound allowed on it." >&2
+  fi
+
+  nft "add rule inet aevum_ingress input limit rate ${LOG_RATE} log prefix "${LOG_PREFIX}" flags all counter drop comment "aevum_ingress_logdrop"" >/dev/null 2>&1 || true
+  write_state_file "TAILSCALEONLY"
+  receipt note "ingress set TAILSCALEONLY (default deny, tailscale iface allow)" component=ingress tailscale_if="$TAILSCALE_IF" allow_ssh_from_ts="$ALLOW_SSH_FROM_TS" ssh_port="$SSH_PORT" ruleset_sha256="$(state_hash)" || true
+}
+
+lanonly() {
+  ensure_table
+  nft list table inet aevum_ingress >/dev/null 2>&1 || nft -f "$NFT_FILE" >/dev/null 2>&1 || true
+  nft list chain inet aevum_ingress input >/dev/null 2>&1 || nft 'add chain inet aevum_ingress input { type filter hook input priority -100 ; policy drop ; }' >/dev/null 2>&1 || true
+  nft 'flush chain inet aevum_ingress input' >/dev/null 2>&1 || true
+
+  # Allow established/related + loopback + LAN baseline.
+  nft 'add rule inet aevum_ingress input ct state established,related accept comment "aevum_established"' >/dev/null 2>&1 || true
+  nft 'add rule inet aevum_ingress input iif "lo" accept comment "aevum_loopback"' >/dev/null 2>&1 || true
+  nft "add rule inet aevum_ingress input ip saddr $LAN_CIDR accept comment \"aevum_lan\"" >/dev/null 2>&1 || true
+
+  # Optional: allow SSH from LAN only
+  if [[ "${ALLOW_SSH_FROM_LAN}" == "1" ]]; then
+    nft "insert rule inet aevum_ingress input ip saddr $LAN_CIDR tcp dport $SSH_PORT accept comment \"aevum_lan_ssh_${SSH_PORT}\"" >/dev/null 2>&1 || true
+  fi
+
+  # Log + drop everything else (rate-limited).
+  nft "add rule inet aevum_ingress input limit rate ${LOG_RATE} log prefix \"${LOG_PREFIX}\" flags all counter drop comment \"aevum_ingress_logdrop\"" >/dev/null 2>&1 || true
+
+  write_state_file "LANONLY"
+  receipt note "ingress set LANONLY (default deny, LAN allow)" component=ingress lan_cidr="$LAN_CIDR" allow_ssh_from_lan="$ALLOW_SSH_FROM_LAN" ssh_port="$SSH_PORT" ruleset_sha256="$(state_hash)" || true
+}
+
+open_ports() {
+  local seconds="$1"; shift
+  [[ "$#" -ge 1 ]] || { echo "No ports provided"; exit 2; }
+  lanonly
+  for p in "$@"; do
+    nft "insert rule inet aevum_ingress input ip saddr $LAN_CIDR tcp dport $p accept comment \"aevum_lan_open_$p\"" >/dev/null 2>&1 || true
+  done
+  write_state_file "OPEN"
+  receipt note "ingress opened ports (LAN)" component=ingress seconds="$seconds" ports="$*" ruleset_sha256="$(state_hash)" || true
+  sleep "$seconds"
+  lanonly
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  status)
+    echo "INGRESS CONFIG: WAN_IF=$WAN_IF LAN_CIDR=$LAN_CIDR TAILSCALE_IF=$TAILSCALE_IF"
+    echo "STATE_FILE=$STATE_FILE"
+    echo "ruleset_sha256=$(state_hash)"
+    nft list table inet aevum_ingress 2>/dev/null || echo "aevum_ingress table not present (ok)"
+    ;;
+  close)
+    close_all
+    ;;
+  lanonly)
+    lanonly
+    ;;
+  tailscaleonly)
+    tailscaleonly
+    ;;
+  open)
+    shift
+    seconds="${1:-600}"
+    shift || true
+    open_ports "$seconds" "$@"
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

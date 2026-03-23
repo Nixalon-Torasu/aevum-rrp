@@ -1,0 +1,39 @@
+[Unit]
+Description=Aevum TimeChain Daemon (workstation)
+ConditionPathExists=/var/lib/aevum/workstation/identity/device_ed25519_sk.pem
+After=aevum-identity-bootstrap-workstation.service aevum-tpm-unseal.service aevum-registry-seal.service
+Wants=aevum-identity-bootstrap-workstation.service aevum-tpm-unseal.service aevum-registry-seal.service
+
+[Service]
+ExecStartPre=/opt/aevum-tools/bin/aevum-tpm-sign-init --instance workstation --base /var/lib/aevum
+ExecStartPre=/opt/aevum-tools/bin/aevum-tpm-anchor --instance workstation --base /var/lib/aevum
+Type=simple
+RuntimeDirectory=aevum
+RuntimeDirectoryMode=0755
+ExecStartPre=-/opt/aevum-tools/bin/aevum-tpm-policy sync
+ExecStartPre=-/opt/aevum-tools/bin/aevum-tpm-receipt-policy sync
+ExecStartPre=/opt/aevum-tools/bin/aevum-registry-verify --strict
+ExecStart=/usr/local/sbin/aevum_timechain_daemon.py --base /var/lib/aevum/workstation --tpm-sign-timeblocks
+Restart=always
+RestartSec=2
+
+
+
+
+
+# --- Aevum service hardening (data-plane, non-gating) ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+UMask=0077
+ReadWritePaths=/var/lib/aevum /run/aevum /var/log /etc/aevum
+
+[Install]
+WantedBy=multi-user.target

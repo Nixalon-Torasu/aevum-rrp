@@ -1,0 +1,34 @@
+{
+  "content": {
+    "devices": [
+      {
+        "bound_node_id": "node:primary:001",
+        "device_id": "dev:tpm:primary",
+        "fingerprint": "sha256:TPM_EK_FP",
+        "kind": "TPM"
+      },
+      {
+        "device_id": "dev:yubikey:govA",
+        "fingerprint": "sha256:YKEY_A_FP",
+        "kind": "YUBIKEY",
+        "notes": "Gov share holder"
+      },
+      {
+        "device_id": "dev:yubikey:govB",
+        "fingerprint": "sha256:YKEY_B_FP",
+        "kind": "YUBIKEY",
+        "notes": "Gov share holder"
+      },
+      {
+        "device_id": "dev:vault:laptop",
+        "fingerprint": "sha256:VAULT_FP",
+        "kind": "OFFLINE_VAULT",
+        "notes": "Offline share storage"
+      }
+    ],
+    "registry_digest": "47ebe3212101100e7c4faffcee863b301b8808ec5e0d312a4974457509f24bd8",
+    "registry_id": "AEVUM:DEVICEREGISTRY:V1",
+    "registry_version": "1.7.0",
+    "type": "DeviceRegistry"
+  }
+}

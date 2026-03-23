@@ -1,0 +1,54 @@
+{
+  "schema_id": "AEVUM:OWNERSHIP:PREFIX_OWNERS:V1",
+  "version": "v1",
+  "owners": [
+    {
+      "prefix": "/etc/aevum/trust/",
+      "owner": "bootkit"
+    },
+    {
+      "prefix": "/etc/aevum/mode",
+      "owner": "bootkit"
+    },
+    {
+      "prefix": "/etc/aevum/registry/",
+      "owner": "gitops"
+    },
+    {
+      "prefix": "/etc/aevum/bundles.d/",
+      "owner": "gitops"
+    },
+    {
+      "prefix": "/etc/aevum/egress_profiles.d/",
+      "owner": "gitops"
+    },
+    {
+      "prefix": "/etc/aevum/ownership/",
+      "owner": "bootstrap"
+    },
+    {
+      "prefix": "/etc/aevum/schemas/",
+      "owner": "bootstrap"
+    },
+    {
+      "prefix": "/opt/aevum-tools/",
+      "owner": "bootstrap"
+    },
+    {
+      "prefix": "/usr/local/sbin/",
+      "owner": "bootstrap"
+    },
+    {
+      "prefix": "/usr/local/bin/",
+      "owner": "bootstrap"
+    },
+    {
+      "prefix": "/etc/systemd/system/aevum-",
+      "owner": "bootstrap"
+    },
+    {
+      "prefix": "/var/lib/aevum/operator/",
+      "owner": "bootkit"
+    }
+  ]
+}

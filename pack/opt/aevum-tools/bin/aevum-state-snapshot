@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+OUT_DIR="/var/lib/aevum/attest/state"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+OUT="$OUT_DIR/state_${STAMP}.json"
+
+mkdir -p "$OUT_DIR"
+
+ruleset="$(nft list ruleset 2>/dev/null || true)"
+ruleset_sha="$(printf "%s" "$ruleset" | sha256sum | awk '{print $1}')"
+
+compose_digests=""
+if command -v docker >/dev/null 2>&1; then
+  compose_digests="$(docker ps --format '{{.Image}}' | sort -u | sha256sum | awk '{print $1}')"
+fi
+
+cat > "$OUT" <<EOF
+{
+  "timestamp_utc": "$STAMP",
+  "nft_ruleset_sha256": "$ruleset_sha",
+  "docker_images_digest_sha256": "$compose_digests"
+}
+EOF
+
+if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+  /opt/aevum-tools/bin/aevum-receipt note "state snapshot" component=attest file="$OUT" nft_sha="$ruleset_sha" docker_sha="$compose_digests" || true
+fi
+
+echo "$OUT"

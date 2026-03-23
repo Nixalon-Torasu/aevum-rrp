@@ -1,0 +1,24 @@
+---
+- name: Install Docker Engine from Ubuntu repo (safe default)
+  apt:
+    name:
+      - docker.io
+      - docker-compose-v2
+    state: present
+    update_cache: true
+
+- name: Enable docker
+  systemd:
+    name: docker
+    enabled: true
+    state: started
+
+- name: Ensure aevum docker network exists
+  command: docker network inspect aevum_net
+  register: net_check
+  failed_when: false
+  changed_when: false
+
+- name: Create aevum docker network if missing
+  command: docker network create aevum_net
+  when: net_check.rc != 0

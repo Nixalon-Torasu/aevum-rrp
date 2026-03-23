@@ -1,0 +1,26 @@
+[Unit]
+Description=Aevum IMA Snapshot Anchor (measure-only)
+ConditionPathExists=/var/lib/aevum/workstation/identity/device_ed25519_sk.pem
+After=multi-user.target
+ConditionPathExists=/sys/kernel/security/ima/ascii_runtime_measurements
+
+[Service]
+Type=oneshot
+RuntimeDirectory=aevum
+RuntimeDirectoryMode=0755
+ExecStart=/usr/local/sbin/aevum_ima_snapshot.py
+User=root
+Group=root
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/aevum /run/aevum /var/log /etc/aevum

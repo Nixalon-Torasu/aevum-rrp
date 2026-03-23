@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Aevum Audit Summarizer every 5 minutes
+
+[Timer]
+OnBootSec=120s
+OnUnitActiveSec=300s
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

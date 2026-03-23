@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE="${AEVUM_BOOTSTRAP_BASE:-/srv/aevum-hot/bootstrap}"
+LOGS="$BASE/logs"
+
+LOG="${1:-}"
+if [ -z "$LOG" ]; then
+  LOG="$(ls -1t "$LOGS"/bootstrap_update_*.log 2>/dev/null | head -n 1 || true)"
+fi
+
+if [ -z "$LOG" ] || [ ! -f "$LOG" ]; then
+  echo "No bootstrap log found."
+  exit 2
+fi
+
+echo "== FAIL/ERROR summary for: $LOG =="
+# Show the most actionable lines first
+grep -nE '(^\[FAIL\]|\bFAIL\b|\bERROR\b|Traceback \(most recent call last\)|\bException\b|fatal:|Exec format error)' "$LOG"   | tail -n 200 || true

@@ -1,0 +1,15 @@
+{
+  "built_in_policy": "tcb",
+  "kernel_cmdline_required": [
+    "ima_tcb",
+    "ima_hash=sha256"
+  ],
+  "mode": "measure_only",
+  "notes": "Measure-only. Do not enable appraisal in production until staged + verified.",
+  "snapshot": {
+    "enabled": true,
+    "interval_sec": 3600,
+    "max_snapshot_bytes": 262144
+  },
+  "type": "aevum_ima_policy_v1"
+}

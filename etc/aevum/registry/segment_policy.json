@@ -1,0 +1,22 @@
+{
+  "chains": [
+    "T",
+    "I",
+    "P",
+    "R",
+    "F"
+  ],
+  "enabled": true,
+  "manifest_schema": "AEVUM:SEGMENT_MANIFEST:V1",
+  "max_active_bytes": 0,
+  "min_segment_lines": 30,
+  "mode": "hourly_timeblock",
+  "payloads_dir": "accurate/payloads",
+  "receipts_dir": "accurate/receipts",
+  "schema": "AEVUM:SEGMENT_POLICY:V1",
+  "segment_dir": "accurate/segments",
+  "service_unit": "aevum-segment.service",
+  "state_dir": "accurate/state",
+  "timer_unit": "aevum-segment.timer",
+  "window_seconds": 3600
+}

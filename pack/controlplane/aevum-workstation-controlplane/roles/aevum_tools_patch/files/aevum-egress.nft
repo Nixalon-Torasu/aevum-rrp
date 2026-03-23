@@ -1,0 +1,49 @@
+# Aevum egress base table (authoritative default-deny, logged)
+# Defines tables/chains/sets; enforcement is performed by egressctl.
+#
+# Allowlist support:
+# - aevum_allow_ifaces: container ingress interfaces permitted to egress during windows
+# - aevum_allow_v4:     container IPv4 sources permitted to egress during windows
+# - aevum_allow_dst4:   IPv4 destinations permitted during windows (optional)
+# - aevum_allow_dst6:   IPv6 destinations permitted during windows (optional)
+#
+# Sets are empty by default; allowlist modes are opt-in via /etc/aevum/egressctl.conf.
+table inet aevum_egress {
+  set aevum_allow_ifaces {
+    type ifname;
+    flags interval;
+  }
+
+  set aevum_allow_v4 {
+    type ipv4_addr;
+    flags interval;
+  }
+
+  set aevum_allow_dst4 {
+    type ipv4_addr;
+    flags interval;
+  }
+
+  set aevum_allow_dst6 {
+    type ipv6_addr;
+    flags interval;
+  }
+
+  set aevum_allow_dns4 {
+    type ipv4_addr;
+    flags interval;
+  }
+
+  set aevum_allow_dns6 {
+    type ipv6_addr;
+    flags interval;
+  }
+
+  chain output {
+    type filter hook output priority -100; policy drop;
+  }
+
+  chain forward {
+    type filter hook forward priority -100; policy drop;
+  }
+}

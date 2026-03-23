@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODE_FILE="/etc/aevum/mode"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  aevum-modectl status
+  aevum-modectl set <install|maintenance|locked|estop>
+
+Notes:
+- Mode is stored in /etc/aevum/mode
+- 'estop' stops and disables Aevum services immediately.
+USAGE
+}
+
+cur_mode() {
+  if [ -f "$MODE_FILE" ]; then
+    tr -d ' \t\r\n' < "$MODE_FILE"
+  else
+    echo "install"
+  fi
+}
+
+do_status() {
+  echo "mode=$(cur_mode)"
+}
+
+do_set() {
+  local m="${1:-}"
+  case "$m" in
+    install|maintenance|locked|estop) ;;
+    *) echo "ERROR: invalid mode: $m"; usage; exit 2 ;;
+  esac
+  sudo mkdir -p "$(dirname "$MODE_FILE")"
+  echo "$m" | sudo tee "$MODE_FILE" >/dev/null
+  sudo chmod 0644 "$MODE_FILE" || true
+  echo "mode=$m"
+
+  if [ "$m" = "estop" ]; then
+    echo "[estop] Stopping Aevum services..."
+    sudo systemctl stop 'aevum-*' 2>/dev/null || true
+    sudo systemctl disable 'aevum-*' 2>/dev/null || true
+    exit 0
+  fi
+
+  if [ "$m" = "locked" ]; then
+    echo "[locked] Enabling firewall service (if present)..."
+    sudo systemctl enable --now aevum-firewall.service 2>/dev/null || true
+  else
+    echo "[open] Disabling firewall service (if present)..."
+    sudo systemctl disable --now aevum-firewall.service 2>/dev/null || true
+  fi
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  status) do_status ;;
+  set) shift; do_set "${1:-}" ;;
+  *) usage; exit 1 ;;
+esac

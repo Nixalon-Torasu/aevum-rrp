@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# aevum-audit-summarize
+# Reads audit.log since last cursor and emits a bounded summary receipt.
+#
+# Cursor:
+#   /var/lib/aevum/workstation/audit/cursor_epoch
+#
+# Artifacts:
+#   /var/lib/aevum/workstation/audit/summary_<timestamp>.txt
+#
+# Non-gating: exits 0 if audit tools/log missing.
+
+BASE="${BASE:-/var/lib/aevum/workstation}"
+LOG="/var/log/audit/audit.log"
+OUTDIR="${BASE}/audit"
+CURSOR="${OUTDIR}/cursor_epoch"
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+OUT="${OUTDIR}/summary_${TS}.txt"
+
+mkdir -p "${OUTDIR}"
+
+if [[ ! -f "${LOG}" ]]; then
+  [[ -x /opt/aevum-tools/bin/aevum-receipt ]] && /opt/aevum-tools/bin/aevum-receipt note "audit summarize skipped (no audit.log)" component=audit || true
+  exit 0
+fi
+if ! command -v ausearch >/dev/null 2>&1; then
+  [[ -x /opt/aevum-tools/bin/aevum-receipt ]] && /opt/aevum-tools/bin/aevum-receipt note "audit summarize skipped (no ausearch)" component=audit || true
+  exit 0
+fi
+
+last_epoch=0
+if [[ -f "${CURSOR}" ]]; then
+  last_epoch="$(cat "${CURSOR}" 2>/dev/null || echo 0)"
+fi
+now_epoch="$(date -u +%s)"
+# Move cursor forward immediately (avoid double-counting if summarizer is slow)
+echo "${now_epoch}" > "${CURSOR}"
+
+start_iso="$(date -u -d @"${last_epoch}" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "1970-01-01 00:00:00")"
+
+# Pull events since last cursor. Keep bounded output by limiting lines.
+# NOTE: audit timestamps are local by default; we use UTC string; good enough for bounded summaries.
+tmp="$(mktemp)"
+ausearch -ts "${start_iso}" -i --input-logs 2>/dev/null | head -n 20000 > "${tmp}" || true
+
+root_exec_count="$(grep -c "key=aevum_root_exec" "${tmp}" 2>/dev/null || echo 0)"
+etc_aevum_count="$(grep -c "key=aevum_etc_aevum" "${tmp}" 2>/dev/null || echo 0)"
+nft_count="$(grep -c "key=aevum_nft" "${tmp}" 2>/dev/null || echo 0)"
+systemd_count="$(grep -c "key=aevum_systemd" "${tmp}" 2>/dev/null || echo 0)"
+tools_count="$(grep -c "key=aevum_tools" "${tmp}" 2>/dev/null || echo 0)"
+cp_count="$(grep -c "key=aevum_controlplane" "${tmp}" 2>/dev/null || echo 0)"
+
+# Best-effort "top commands" for root execve (a little messy in audit output)
+top_cmds="$(grep -n "key=aevum_root_exec" -n "${tmp}" | head -n 5000 | sed -n 's/.*exe=\\"\\([^\\"]\\+\\)\\".*/\\1/p' | sort | uniq -c | sort -nr | head -n 10 | tr '\n' ';' | sed 's/[[:space:]]\\+/ /g')"
+
+{
+  echo "Aevum audit summary ${TS}"
+  echo "since_epoch=${last_epoch} since_iso=${start_iso}"
+  echo "root_exec_count=${root_exec_count}"
+  echo "changes:/etc/aevum=${etc_aevum_count} /etc/nftables.d=${nft_count} /etc/systemd/system=${systemd_count} /opt/aevum-tools/bin=${tools_count} /opt/aevum-controlplane=${cp_count}"
+  echo "top_root_exec_exe=${top_cmds}"
+} > "${OUT}"
+
+hash="$(sha256sum "${OUT}" | awk '{print $1}')"
+rm -f "${tmp}" || true
+
+if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+  /opt/aevum-tools/bin/aevum-receipt note "audit summary" component=audit file="${OUT}" manifest="sha256:${hash}" root_exec="${root_exec_count}" etc_aevum="${etc_aevum_count}" nft="${nft_count}" systemd="${systemd_count}" tools="${tools_count}" controlplane="${cp_count}" top="${top_cmds}" || true
+fi
+
+echo "OK: ${OUT} sha256:${hash}"

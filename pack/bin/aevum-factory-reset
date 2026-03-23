@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# aevum-factory-reset
+#
+# Purpose: reset the Aevum layer on an already-installed machine.
+# This is NOT an OS wipe. It removes Aevum state + configs and stops Aevum services.
+#
+# SAFE DEFAULT: ask for confirmation unless --yes.
+#
+# What it removes:
+# - /var/lib/aevum
+# - /etc/aevum
+# - /etc/nftables.d/aevum*.conf (optional, only those created by Aevum)
+# - /etc/audit/rules.d/aevum.rules (optional)
+# - systemd units matching aevum-*
+#
+# It does not remove apt packages. That's deliberate.
+
+YES=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --yes) YES=1; shift;;
+    *) shift;;
+  esac
+done
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "Run as root." >&2
+  exit 2
+fi
+
+if [[ "${YES}" != "1" ]]; then
+  echo "This will STOP Aevum services and DELETE /var/lib/aevum and /etc/aevum."
+  echo "If you want to proceed, run: aevum-factory-reset --yes"
+  exit 1
+fi
+
+# Stop/disable units (best-effort)
+units=$(systemctl list-unit-files | awk '{print $1}' | grep -E '^aevum-.*\.(service|timer)$' || true)
+for u in ${units}; do
+  systemctl stop "$u" >/dev/null 2>&1 || true
+  systemctl disable "$u" >/dev/null 2>&1 || true
+done
+
+# Remove known files
+rm -rf /var/lib/aevum || true
+rm -rf /etc/aevum || true
+
+# Remove Aevum audit rules (optional)
+rm -f /etc/audit/rules.d/aevum.rules >/dev/null 2>&1 || true
+augenrules --load >/dev/null 2>&1 || true
+systemctl restart auditd.service >/dev/null 2>&1 || true
+
+# Remove Aevum nft snippets (only those prefixed)
+find /etc/nftables.d -maxdepth 1 -type f -name 'aevum*.conf' -print0 2>/dev/null | xargs -0r rm -f || true
+
+# Remove systemd unit files installed by Aevum (safe: only those named aevum-*)
+find /etc/systemd/system -maxdepth 1 -type f -name 'aevum-*.*' -print0 2>/dev/null | xargs -0r rm -f || true
+systemctl daemon-reload >/dev/null 2>&1 || true
+
+echo "OK: Aevum layer reset complete."

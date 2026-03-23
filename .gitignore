@@ -1,0 +1,16 @@
+# build outputs
+dist/
+work/
+.cache/
+*.tgz
+*.zip
+
+# OS build artifacts
+os/build/
+os/*.iso
+os/*.img
+
+# editor
+.vscode/
+.idea/
+*.swp

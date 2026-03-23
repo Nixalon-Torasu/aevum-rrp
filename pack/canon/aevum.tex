@@ -1,0 +1,225 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{titling}
+\usepackage{hyperref}
+\usepackage{parskip}
+
+\geometry{margin=1in}
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}
+\newtheorem{corollary}{Corollary}
+
+\title{\textbf{Aevum: A Sovereign Framework for Epistemic Attestation, Causal Mapping, and Reflective Comprehension}}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This paper presents Aevum, a comprehensive framework for personal and collective epistemic sovereignty. Aevum integrates three core components: (1) a cryptographically-anchored attestation engine that binds an individual's lived reality to immutable chains; (2) a causality spiral model for mapping interactions from singular points of contact through physical, psychological, social, and existential layers; and (3) a fractal mirror of comprehension that transforms raw encounters into knowledge, intelligence, and wisdom via recursive reflection. Together, these elements form a decentralized, non-aggregable system that restores the innate human right to self-attest existence, trace causality without deformation, and achieve reintegrated understanding. We formalize the architecture, equations, and theorems, demonstrating viability for applications in personal sovereignty, interpersonal dynamics, and institutional reform. Aevum counters narrative capture and epistemic oppression by making reality verifiable, contradictions preservable, and wisdom emergent.
+\end{abstract}
+
+\textbf{Keywords:} epistemic sovereignty, attestation ledger, causality mapping, reflective comprehension, fractal cognition, zero-knowledge proofs, personal AI
+
+\section{Introduction}
+
+Contemporary systems for knowledge production and reality attestation are centralized, aggregable, and prone to coercive deformation. Institutions---medical, educational, legal---often overwrite individual ledgers with external narratives, leading to epistemic injustice and loss of sovereignty. Aevum addresses this by engineering a framework where individuals attest their existence first, map interactions rigorously, and reflect for wisdom without external override.
+
+Aevum's three pillars are interdependent:
+\begin{itemize}
+    \item Attestation Engine: Grounds raw data in immutable chains.
+    \item Causality Spiral: Maps interactions as layered, decaying ripples.
+    \item Mirror of Comprehension: Transforms attested data into reflective wisdom via fractal recursion.
+\end{itemize}
+
+This paper unifies these into a formal specification, with mathematical proofs and implications for real-world deployment.
+
+\section{Aevum Attestation Engine}
+
+\subsection{Purpose and Principles}
+
+Aevum binds an individual's reality to five synchronized chains: Time, Physiology, Perception, Reality, and Interaction. Core principles include invariance (data cannot be rewritten), non-aggregability, personal sovereignty, transparent computation, and projection discipline.
+
+\subsection{Architecture}
+
+Blocks form in 1-second epochs, containing timestamp $t$, attestation vector
+\[
+H(t) = [\tau(t), \Phi(t), \Sigma(t), \rho(t), \iota(t), \zeta(t)],
+\]
+Merkle roots, and signatures. Chains are independent but synchronized.
+
+\begin{itemize}
+    \item Time Chain: Canonical temporal backbone.
+    \item Physiology Chain: Biometric state (HRV, breathing, motion).
+    \item Perception Chain: Sensory inputs (luminance, energy levels).
+    \item Reality Chain: Objective environment (GPS, sensors).
+    \item Interaction Chain: Actions and outputs (metadata only).
+\end{itemize}
+
+Projections use zk-proofs for binary, interval, semantic, or discrepancy outputs. Security model defends against spoofing and coercion, with explicit limits.
+
+\subsection{Roadmap}
+
+Phase 1: Kernel attestation. Phase 2: Projections. Phase 3: Local AI. Phase 4: Identity binding. Phase 5: Public release.
+
+Aevum provides the substrate for causality mapping and comprehension by attesting raw encounters without inference.
+
+\section{Aevum Causality Spiral}
+
+\subsection{Model Overview}
+
+The Causality Spiral models a singular interaction (e.g., a ``poke'') as an Archimedean spiral radiating through layers: Physical (L1), Psychological (L2), Social/Relational (L3), Existential/Ethical (L4).
+
+Geometry:
+\[
+S(\theta) = x_0 + (r(\theta)\cos\theta, r(\theta)\sin\theta), \quad r(\theta) = r_0 + k\theta, \quad \theta \geq 0, \quad k > 0.
+\]
+
+Time:
+\[
+\tau(\theta) = t_0 + \alpha(r_0 + k\theta), \quad \alpha > 0.
+\]
+
+\subsection{Equations}
+
+Kernels:
+\[
+K_A(u) = \frac{1}{2\pi\sigma_A^2} \exp\left(-\frac{\|u\|^2}{2\sigma_A^2}\right), \quad
+K_R(v) = \frac{1}{2\pi\sigma_R^2} \exp\left(-\frac{\|v\|^2}{2\sigma_R^2}\right), \quad \sigma_A < \sigma_R.
+\]
+
+Energy:
+\[
+E_0 = F \Delta t, \quad E_A(u) = E_0 K_A(u), \quad E_R(v) = E_0 K_R(v).
+\]
+
+Projections: Value axes $V = \{V_i\}$, angles $\phi_i$, weights $w_i$, $G \in [-1,1]$.
+
+Density:
+\[
+\rho(\theta) = \rho_0 e^{-\lambda\theta}.
+\]
+
+Components:
+\[
+C_i(\Theta) = w_i \rho_0 \Re \left[ \frac{1 - e^{-(\lambda - i)\Theta}}{\lambda - i} e^{i\phi_i} \right].
+\]
+
+Meanings:
+\[
+M_i(\Theta) = G \left( \beta_A C_i^A(\Theta) + \beta_R C_i^R(\Theta) \right), \quad \beta_A + \beta_R = 1.
+\]
+
+Aggregate:
+\[
+M_{\mathrm{total}}(\Theta) = \sum_i M_i(\Theta).
+\]
+
+Propagation:
+\[
+\bar{C}_i(\Theta) = C_i(\Theta) + \sum_{N_j} p_{j|\Theta} \kappa_j C_i^{(j)}.
+\]
+
+Attenuation:
+\[
+G_{\mathrm{eff}} = (1 - \Delta) G.
+\]
+
+Gaps:
+\[
+\Gamma_i(\Theta) = |M_i^A(\Theta) - M_i^R(\Theta)|.
+\]
+
+\subsection{Theorems}
+
+\begin{theorem}[Monotone Envelope]
+If $\rho(\theta) \geq 0$, $w_i \geq 0$, then
+\[
+E_i(\Theta) = \int_0^\Theta \rho(\theta) \, d\theta
+\]
+is non-decreasing.
+\end{theorem}
+
+\begin{theorem}[Axis Decomposition]
+If $\{\exp(i\phi_i)\}$ spans $\mathbb{R}^2$, then $I(\Theta)$ reconstructs via least squares.
+\end{theorem}
+
+\begin{theorem}[Reciprocity Bound]
+\[
+\sum_i \Gamma_i(\Theta) \leq 2W \max\left\{\int_0^\Theta \rho(\theta) \, d\theta, \sum_j p_{j|\Theta} \kappa_j \int \rho^{(j)}\right\}.
+\]
+\end{theorem}
+
+\begin{corollary}[Consent Attenuation]
+Scaling $G$ to $G_{\mathrm{eff}}$ attenuates $M_i$ and $\Gamma_i$ by $1 - \Delta$.
+\end{corollary}
+
+The spiral maps attested interactions, quantifying harm and enabling reflection.
+
+\section{Mirror of Comprehension}
+
+\subsection{Fractal Flow}
+
+The Mirror transforms raw encounters into wisdom via recursive stages.
+
+\begin{enumerate}[label=Stage \arabic*:, leftmargin=*]
+    \item Raw Encounter: Signal triad (Input $\to$ Hold $\to$ Output).
+    \item Anchors: Metaphor, Parable, Anecdote, Synonyms, Contextual Chains.
+    \item Hinges: Pattern Recognition, Embodiment, Translation, Association, Abstraction.
+    \item Micro-Hinges: Perception/Comparison/Resonance, etc.
+    \item Atomic Triads: Sensing-Noticing-Focusing, etc.
+    \item Micro-Atomic: Reception-Transduction-Transmission, etc.
+    \item Sub-Symbolic: Oscillation, Resonance, Phase-locking.
+    \item Pre-Emergent: Electromagnetic Flow, Biochemical Modulation, Quantum/Noise.
+    \item Archetypes: Receive-Shape-Release.
+\end{enumerate}
+
+Recursion ensures self-similarity.
+
+\subsection{Integration with Aevum}
+
+Sensory chains capture Stage 0--1; engines run 2--3; deeper layers in emotional/resilience/sins-virtues engines. Public ledger at 15\% threshold for collective wisdom.
+
+The Mirror reflects attested spirals, yielding wisdom.
+
+\section{Unified Framework and Implications}
+
+Aevum unifies attestation (raw data), causality (interaction mapping), and comprehension (reflective wisdom). Interactions are attested, spiraled, and mirrored without aggregation.
+
+Implications:
+\begin{itemize}
+    \item Medical/Educational Sovereignty: Attested physiology + spirals detect gaslighting.
+    \item Interpersonal Harm: Gaps quantify violations; mirrors reintegrate.
+    \item Societal Reform: Nexus convergence exposes systemic capture.
+\end{itemize}
+
+Deployment: Seed via guilds; convergence thresholds ensure emergence.
+
+\section{Discussion}
+
+Aevum resists coercion by design. Limitations: cannot prevent physical seizure. Future work: hardware integration, API for mirrors.
+
+\section{Conclusion}
+
+Aevum restores epistemic sovereignty through attestation, mapping, and reflection. By combining these, individuals reclaim reality, fostering a post-bullshit world.
+
+\section*{References}
+
+Fricker, M. (2007). \textit{Epistemic Injustice}.\\
+Gibson, J.J. (1979). \textit{Ecological Approach to Visual Perception}.\\
+Husserl, E. (1913). \textit{Ideas}.\\
+Merleau-Ponty, M. (1945). \textit{Phenomenology of Perception}.\\
+Original contributions: Aevum Spec, Causality Spiral Equations, Mirror Flow (this work).
+
+\end{document}

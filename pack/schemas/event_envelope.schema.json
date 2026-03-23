@@ -1,0 +1,98 @@
+{
+  "$id": "AEVUM:SCHEMA:EVENT_ENVELOPE_JSON:V1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "capture_device_hex": {
+      "pattern": "^[0-9a-f]{32}$",
+      "type": "string"
+    },
+    "chain_id": {
+      "description": "Chain identifier. Spec maps to {P,R,PHI,I,T}.",
+      "enum": [
+        "P",
+        "R",
+        "PHI",
+        "I",
+        "T"
+      ],
+      "type": "string"
+    },
+    "event_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "local_monotime_ns": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "payload_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "payload_ref": {
+      "type": "string"
+    },
+    "prev_event_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema": {
+      "const": "AEVUM:EVENT_ENVELOPE:V1"
+    },
+    "seq_no": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "signature": {
+      "additionalProperties": true,
+      "properties": {
+        "alg": {
+          "const": "Ed25519"
+        },
+        "canonicalization": {
+          "type": "string"
+        },
+        "kid": {
+          "type": "string"
+        },
+        "sig_b64": {
+          "type": "string"
+        },
+        "signed_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "alg",
+        "kid",
+        "sig_b64"
+      ],
+      "type": "object"
+    },
+    "subject_id_hex": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "time_block_id": {
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema",
+    "chain_id",
+    "subject_id_hex",
+    "seq_no",
+    "time_block_id",
+    "local_monotime_ns",
+    "capture_device_hex",
+    "prev_event_hash",
+    "payload_hash",
+    "payload_ref",
+    "event_hash",
+    "signature"
+  ],
+  "title": "Aevum EventEnvelope JSON (Year-1)",
+  "type": "object"
+}

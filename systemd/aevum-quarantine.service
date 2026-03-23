@@ -1,0 +1,11 @@
+[Unit]
+Description=Aevum Quarantine Enforcement
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/aevum_quarantine.sh
+
+[Install]
+WantedBy=aevum-quarantine.target

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# If you have the unpacked pack at /opt/aevum-pack, this will guard it.
+ROOT="${1:-/opt/aevum-pack}"
+shift || true
+exec python3 "${ROOT}/gitops/conical_guard.py" --pack-root "${ROOT}" "$@"

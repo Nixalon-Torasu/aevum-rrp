@@ -1,0 +1,15 @@
+{
+  "bank": "sha256",
+  "mode": "observe",
+  "notes": "Default workstation policy: observe-only, no gating, PCRs 0,2,7 on sha256 bank.",
+  "pcrs": [
+    0,
+    2,
+    7
+  ],
+  "profile_name": "baseline_observe",
+  "purpose": "boot_integrity_evidence_and_commit",
+  "quote_qualifying_data_prefix": "aevum",
+  "schema": "AEVUM:TPM:PCR_POLICY:V1",
+  "version": "1.0.0"
+}

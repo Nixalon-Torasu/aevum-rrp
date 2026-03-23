@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+echo "=== Aevum IMA Status ==="
+if [[ -d /sys/kernel/security/ima ]]; then
+  echo "IMA securityfs: present"
+else
+  echo "IMA securityfs: MISSING (/sys/kernel/security/ima)"
+  exit 2
+fi
+if [[ -f /sys/kernel/security/ima/ascii_runtime_measurements ]]; then
+  echo "IMA measurements: present"
+  echo "Lines: $(wc -l </sys/kernel/security/ima/ascii_runtime_measurements || true)"
+  echo "Head:"
+  head -n 3 /sys/kernel/security/ima/ascii_runtime_measurements || true
+else
+  echo "IMA measurements: missing (kernel may not support IMA)"
+  exit 2
+fi
+echo "Cmdline: $(cat /proc/cmdline)"
+echo "BootID: $(cat /proc/sys/kernel/random/boot_id)"

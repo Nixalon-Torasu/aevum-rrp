@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Aevum TPM Receipt Signing Policy Sync regularly
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=12h
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

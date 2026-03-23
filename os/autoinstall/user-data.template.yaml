@@ -1,0 +1,74 @@
+#cloud-config
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  identity:
+    hostname: aevum-external
+    username: REPLACE_USERNAME
+    # Generate: python3 -c 'import crypt; print(crypt.crypt("PASS", crypt.mksalt(crypt.METHOD_SHA512)))'
+    password: "REPLACE_PASSWORD_HASH"
+  ssh:
+    install-server: true
+    allow-pw: false
+  storage:
+    config:
+      # SAFETY: Replace this with your external SSD by-id path:
+      # Example: /dev/disk/by-id/usb-Samsung_Portable_SSD_T5_...-0:0
+      - id: disk-external
+        type: disk
+        match:
+          path: "REPLACE_DISK_BY_ID"
+        ptable: gpt
+        wipe: superblock-recursive
+        grub_device: true
+
+      - id: part-boot
+        type: partition
+        device: disk-external
+        size: 1G
+        flag: boot
+
+      - id: part-root
+        type: partition
+        device: disk-external
+        size: -1
+
+      - id: fmt-boot
+        type: format
+        volume: part-boot
+        fstype: fat32
+
+      - id: luks-root
+        type: dm_crypt
+        volume: part-root
+        key: passphrase
+        dm_name: cryptroot
+
+      - id: fmt-root
+        type: format
+        volume: luks-root
+        fstype: ext4
+
+      - id: mnt-root
+        type: mount
+        device: fmt-root
+        path: /
+
+      - id: mnt-boot
+        type: mount
+        device: fmt-boot
+        path: /boot/efi
+  packages:
+    - git
+    - jq
+    - python3
+    - python3-cryptography
+    - cryptsetup
+    - tpm2-tools
+    - zip
+  late-commands:
+    # Put your repo on the external disk and run the external boot setup
+    - curtin in-target --target=/target -- bash -lc "mkdir -p /opt/aevum-external-kit"
+    - curtin in-target --target=/target -- bash -lc "echo 'Autoinstall completed. Copy your kit + pack into /opt/aevum-external-kit and run setup.' > /etc/motd"

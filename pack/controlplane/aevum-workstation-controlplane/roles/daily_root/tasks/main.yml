@@ -1,0 +1,31 @@
+---
+- name: Install daily root script
+  copy:
+    src: "aevum-daily-root.sh"
+    dest: /usr/local/sbin/aevum-daily-root.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install systemd service
+  copy:
+    src: "aevum-daily-root.service"
+    dest: /etc/systemd/system/aevum-daily-root.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install systemd timer
+  template:
+    src: "aevum-daily-root.timer.j2"
+    dest: /etc/systemd/system/aevum-daily-root.timer
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable daily root timer
+  systemd:
+    name: aevum-daily-root.timer
+    enabled: true
+    state: started
+    daemon_reload: true

@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# AEVUM_FIX_PY_HEREDOC_TERMINATORS_V1
+set -euo pipefail
+
+# aevum-tpm-seal-device-key (v0.2)
+#
+# Seals the instance device signing key using TPM2 PCR policy, and replaces the on-disk key
+# with a symlink to a tmpfs runtime location (/run/aevum/keys/...).
+#
+# Requires: tpm2-tools, python3, python3-cryptography, openssl
+#
+# Usage:
+#   aevum-tpm-seal-device-key --base /var/lib/aevum --instance workstation
+#   aevum-tpm-seal-device-key --base /var/lib/aevum --instance workstation --policy /etc/aevum/registry/tpm_pcr_policy.json
+#   aevum-tpm-seal-device-key --pcrs "0,2,7" --bank sha256   (override JSON)
+#
+# Effects:
+#   - Encrypts <base>/<instance>/identity/device_ed25519_sk.pem -> device_ed25519_sk.pem.enc
+#   - Removes plaintext key and creates symlink device_ed25519_sk.pem -> /run/aevum/keys/<instance>_device_ed25519_sk.pem
+#   - Creates TPM sealed object that unseals a 32-byte AES key bound to the PCR policy
+#
+# Notes:
+# - Year-1 hardening: improves at-rest protection without redesigning KMLC.
+# - If your boot chain changes, unseal will fail (by design).
+# - Non-gating: if TPM unavailable, exits non-zero (this is a hardening tool), but services remain non-gating.
+
+BASE="/var/lib/aevum"
+INSTANCE="workstation"
+TPM_POLICY="/etc/aevum/registry/tpm_pcr_policy.json"
+PCRS_OVERRIDE=""
+BANK_OVERRIDE=""
+HANDLE="0x81010002"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base) BASE="$2"; shift 2;;
+    --instance) INSTANCE="$2"; shift 2;;
+    --policy) TPM_POLICY="$2"; shift 2;;
+    --pcrs) PCRS_OVERRIDE="$2"; shift 2;;
+    --bank) BANK_OVERRIDE="$2"; shift 2;;
+    --handle) HANDLE="$2"; shift 2;;
+    *) echo "Unknown arg: $1" >&2; exit 2;;
+  esac
+done
+
+[[ "$(id -u)" -eq 0 ]] || { echo "Run as root."; exit 2; }
+command -v tpm2_createprimary >/dev/null 2>&1 || { echo "Missing tpm2-tools. Install: apt-get install -y tpm2-tools"; exit 3; }
+command -v python3 >/dev/null 2>&1 || { echo "Missing python3"; exit 3; }
+command -v openssl >/dev/null 2>&1 || { echo "Missing openssl"; exit 3; }
+
+IDDIR="${BASE}/${INSTANCE}/identity"
+KEY_PLAIN="${IDDIR}/device_ed25519_sk.pem"
+KEY_ENC="${IDDIR}/device_ed25519_sk.pem.enc"
+RUNDIR="/run/aevum/keys"
+KEY_RUN="${RUNDIR}/${INSTANCE}_device_ed25519_sk.pem"
+
+TPMDIR="${BASE}/${INSTANCE}/tpm"
+mkdir -p "${TPMDIR}"
+mkdir -p "${RUNDIR}"
+chmod 0700 "${RUNDIR}"
+
+[[ -f "${KEY_PLAIN}" ]] || { echo "ERROR: plaintext key not found: ${KEY_PLAIN}"; exit 4; }
+
+# Determine PCR bank + list (policy JSON unless overridden)
+PCRS="0,2,7"
+PCR_BANK="sha256"
+TPM_POLICY_SHA=""
+if [[ -f "${TPM_POLICY}" ]]; then
+  PCRS="$(python3 - <<'PY' "${TPM_POLICY}"
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+p=o.get("pcrs",[0,2,7])
+print(",".join(str(int(x)) for x in p))
+PY
+)"
+  PCR_BANK="$(python3 - <<'PY' "${TPM_POLICY}"
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("bank","sha256"))
+PY
+)"
+  TPM_POLICY_SHA="$(sha256sum "${TPM_POLICY}" | awk '{print $1}')"
+fi
+[[ -n "${PCRS_OVERRIDE}" ]] && PCRS="${PCRS_OVERRIDE}"
+[[ -n "${BANK_OVERRIDE}" ]] && PCR_BANK="${BANK_OVERRIDE}"
+
+# Generate 32-byte AES key (never stored plaintext on disk after sealing)
+AES_KEY_BIN="${TPMDIR}/aes_key.bin"
+openssl rand -out "${AES_KEY_BIN}" 32
+
+# TPM policy: bind to PCR set
+POLICY="${TPMDIR}/pcr.policy"
+PRIMARY_CTX="${TPMDIR}/primary.ctx"
+SEAL_PUB="${TPMDIR}/seal.pub"
+SEAL_PRIV="${TPMDIR}/seal.priv"
+SEAL_CTX="${TPMDIR}/seal.ctx"
+
+tpm2_createpolicy --policy-pcr -l "${PCR_BANK}:${PCRS}" -L "${POLICY}" >/dev/null
+tpm2_createprimary -C o -c "${PRIMARY_CTX}" >/dev/null
+tpm2_create -C "${PRIMARY_CTX}" -u "${SEAL_PUB}" -r "${SEAL_PRIV}" -L "${POLICY}" -i "${AES_KEY_BIN}" >/dev/null
+tpm2_load -C "${PRIMARY_CTX}" -u "${SEAL_PUB}" -r "${SEAL_PRIV}" -c "${SEAL_CTX}" >/dev/null
+
+# Persist handle (replace if already present)
+tpm2_evictcontrol -C o -c "${SEAL_CTX}" "${HANDLE}" >/dev/null 2>&1 || true
+tpm2_evictcontrol -C o -c "${SEAL_CTX}" "${HANDLE}" >/dev/null
+
+echo "${HANDLE}" > "${TPMDIR}/sealed.handle"
+chmod 0600 "${TPMDIR}/sealed.handle"
+
+# Record the policy we used (so unseal can report drift)
+cat > "${TPMDIR}/sealed.policy.json" <<JSON
+{
+  "type": "aevum_tpm_seal_policy_v1",
+  "timestamp_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "instance": "${INSTANCE}",
+  "handle": "${HANDLE}",
+  "pcr_bank": "${PCR_BANK}",
+  "pcrs": "${PCRS}",
+  "tpm_pcr_policy_path": "${TPM_POLICY}",
+  "tpm_pcr_policy_sha256": "${TPM_POLICY_SHA}"
+}
+JSON
+chmod 0600 "${TPMDIR}/sealed.policy.json" || true
+
+# Encrypt key using AESGCM(key=AES_KEY_BIN)
+export AES_KEY_BIN KEY_PLAIN KEY_ENC
+python3 - <<'PY'
+import os, pathlib
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+key_bin = pathlib.Path(os.environ.get("AES_KEY_BIN","")).read_bytes()
+plain = pathlib.Path(os.environ["KEY_PLAIN"]).read_bytes()
+import os as _os
+nonce = _os.urandom(12)
+aad = b"aevum:device_key:v1"
+ct = AESGCM(key_bin).encrypt(nonce, plain, aad)
+(pathlib.Path(os.environ["KEY_ENC"])).write_bytes(nonce + ct)
+PY
+
+chmod 0400 "${KEY_ENC}"
+shred -u "${AES_KEY_BIN}" || rm -f "${AES_KEY_BIN}"
+
+# Replace plaintext with symlink to runtime key
+rm -f "${KEY_PLAIN}"
+ln -sf "${KEY_RUN}" "${KEY_PLAIN}"
+
+# Receipt (non-gating)
+if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+  /opt/aevum-tools/bin/aevum-receipt note "TPM sealed device key (PCR policy)" component=identity instance="${INSTANCE}" handle="${HANDLE}" pcrs="${PCRS}" bank="${PCR_BANK}" policy_sha256="sha256:${TPM_POLICY_SHA}" enc="${KEY_ENC}" || true
+fi
+
+echo "OK: sealed. plaintext replaced with symlink -> ${KEY_RUN}"
+echo "    Ensure unseal is enabled: systemctl enable --now aevum-tpm-unseal.service"

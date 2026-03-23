@@ -1,0 +1,20 @@
+{
+  "ask_password_markers": [
+    "please enter passphrase",
+    "enter passphrase",
+    "password for disk",
+    "cryptsetup: password",
+    "systemd-ask-password"
+  ],
+  "notes": "Defines evidence requirements for classifying boot unlock method. Evidence is stored and hashed; classification is derived.",
+  "tpm_markers": [
+    "tpm2",
+    "unseal",
+    "systemd-tpm2",
+    "token",
+    "sealed",
+    "successfully"
+  ],
+  "type": "aevum_unlock_method_policy_v1",
+  "version": "1.0.0"
+}

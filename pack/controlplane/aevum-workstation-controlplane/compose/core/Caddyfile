@@ -1,0 +1,18 @@
+{
+  # Debug off by default
+  # debug
+}
+
+# Replace with your domain. This is a skeleton.
+{$AEVUM_DOMAIN} {
+
+  # Put Authentik in front of apps later via forward_auth once configured.
+  # This file intentionally does not enable forward_auth automatically
+  # because Authentik outpost routes are environment-specific.
+
+  reverse_proxy /authentik/* authentik-server:9000
+
+  # Example app routing (enable once ready)
+  # reverse_proxy /grafana/* grafana:3000
+
+}

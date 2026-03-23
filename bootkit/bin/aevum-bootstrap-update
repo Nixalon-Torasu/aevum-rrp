@@ -1,0 +1,343 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+
+
+# Mode: install|locked|open (bootkit enforces signatures in locked)
+MODE="${AEVUM_MODE:-}"
+if [ -z "$MODE" ] && [ -f /etc/aevum/mode ]; then MODE="$(cat /etc/aevum/mode 2>/dev/null || true)"; fi
+MODE="${MODE:-install}"
+
+# Default airlock (where the operator drops zips)
+DEFAULT_AIRLOCK="/srv/aevum-hot/transfer/bootstrap"
+if [ -d "/srv/aevum-hot/transfer/airlock" ]; then
+  DEFAULT_AIRLOCK="/srv/aevum-hot/transfer/airlock"
+fi
+AIRLOCK="${AEVUM_AIRLOCK_DIR:-$DEFAULT_AIRLOCK}"
+
+BASE="/srv/aevum-hot/bootstrap"
+INBOX="$BASE/inbox"
+CURRENT="$BASE/current"
+TMP="$BASE/tmp"
+STAGE="$BASE/stage"
+LOGDIR="$BASE/logs"
+
+mkdir -p "$INBOX" "$CURRENTRENT" "$TMP" "$STAGE" "$LOGDIR"
+LOG="$LOGDIR/bootstrap_update_${TS}.log"
+
+exec > >(tee -a "$LOG") 2>&1
+
+echo "== AEVUM BOOTSTRAP UPDATE [$TS] =="
+echo "Airlock:  $AIRLOCK"
+echo "Inbox:    $INBOX"
+echo "Current:  $CURRENTRENT"
+echo "Tmp:      $TMP"
+echo "Stage:    $STAGE"
+echo "Log:      $LOG"
+
+if [ ! -d "$AIRLOCK" ]; then
+  echo "ERROR: Airlock folder does not exist: $AIRLOCK"
+  exit 1
+fi
+
+# Reject non-zip files in airlock (operator discipline)
+if find "$AIRLOCK" -maxdepth 1 -type f ! -name '*.zip' -print -quit | grep -q .; then
+  mkdir -p "$INBOX/_reject_${TS}"
+  echo "[reject] Non-zip files found in airlock. Moving to inbox/_reject_${TS} and refusing."
+  find "$AIRLOCK" -maxdepth 1 -type f ! -name '*.zip' -print0 | while IFS= read -r -d '' f; do
+    echo "  - $(basename "$f")"
+    mv -f "$f" "$INBOX/_reject_${TS}/" || true
+  done
+  exit 2
+fi
+
+mapfile -t ZIPS < <(find "$AIRLOCK" -maxdepth 1 -type f -name '*.zip' -printf '%p\n' | sort)
+if [ "${#ZIPS[@]}" -eq 0 ]; then
+  echo "ERROR: No .zip files found in airlock."
+  exit 1
+fi
+
+# --- Helpers ---
+py_get_field() {
+  python3 - <<'PY' "$1" "$2"
+import json,sys
+data=json.loads(sys.argv[1])
+key=sys.argv[2]
+print(data.get(key,""))
+PY
+}
+
+verify_pack_sig() {
+  local manifest="$1" sig="$2"
+  local pub="/etc/aevum/trust/release_pubkey.ed25519.b64"
+  if [[ "${MODE}" != "locked" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$pub" ]]; then
+    echo "ERROR: locked mode requires pubkey at $pub" >&2
+    return 2
+  fi
+  if [[ ! -f "$manifest" || ! -f "$sig" ]]; then
+    echo "ERROR: locked mode requires $manifest and $sig" >&2
+    return 2
+  fi
+  python3 - <<'PY' "$pub" "$manifest" "$sig"
+import base64,sys
+pubf,manf,sigf=sys.argv[1:4]
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+except Exception as e:
+    print("ERROR: cryptography missing for locked-mode signature verification", file=sys.stderr)
+    sys.exit(2)
+pub=base64.b64decode(open(pubf,'rb').read().strip(), validate=True)
+sig=base64.b64decode(open(sigf,'rb').read().strip(), validate=True)
+man=open(manf,'rb').read()
+Ed25519PublicKey.from_public_bytes(pub).verify(sig, man)
+print("OK: signature verified:", manf)
+PY
+}
+
+
+classify_zip() {
+  local z="$1"
+  local js typ bid ver
+  js="$(unzip -p "$z" 'AEVUM_ARTIFACT.json' 2>/dev/null || true)"
+  if [ -n "$js" ]; then
+    typ="$(py_get_field "$js" "artifact_type")"
+    bid="$(py_get_field "$js" "bundle_id")"
+    ver="$(py_get_field "$js" "artifact_version")"
+    echo "${typ}|${bid}|${ver}"
+    return 0
+  fi
+
+  # Legacy heuristics (best effort; prefer AEVUM_ARTIFACT.json)
+  if unzip -Z1 "$z" 2>/dev/null | grep -q '^BOOTKIT_VERSION$'; then
+    echo "bootkit||legacy"
+    return 0
+  fi
+  if unzip -Z1 "$z" 2>/dev/null | grep -q '^pack/PACK_MANIFEST\.meta\.json$'; then
+    echo "bootstrap||legacy"
+    return 0
+  fi
+  if unzip -Z1 "$z" 2>/dev/null | grep -q '^PACK_MANIFEST\.meta\.json$'; then
+    echo "gitops||legacy"
+    return 0
+  fi
+  echo "||"
+}
+
+# --- Collect artifacts ---
+declare -A PATH_BY_TYPE VER_BY_TYPE BID_BY_TYPE
+UNKNOWN=0
+
+for z in "${ZIPS[@]}"; do
+  IFS='|' read -r typ bid ver < <(classify_zip "$z")
+  if [ -z "${typ:-}" ]; then
+    echo "[skip] Unknown zip (missing AEVUM_ARTIFACT.json and no legacy match): $(basename "$z")"
+    UNKNOWN=1
+    continue
+  fi
+  if [ -n "${PATH_BY_TYPE[$typ]:-}" ]; then
+    echo "[skip] Duplicate artifact type '$typ' in airlock; refusing."
+    echo "  - ${PATH_BY_TYPE[$typ]}"
+    echo "  - $z"
+    exit 3
+  fi
+  PATH_BY_TYPE[$typ]="$z"
+  VER_BY_TYPE[$typ]="${ver:-}"
+  BID_BY_TYPE[$typ]="${bid:-}"
+done
+
+if [ "$UNKNOWN" -eq 1 ]; then
+  echo "ERROR: One or more unknown zips were present. Remove them and retry."
+  exit 4
+fi
+
+for t in bootkit bootstrap gitops; do
+  if [ -z "${PATH_BY_TYPE[$t]:-}" ]; then
+    echo "ERROR: Missing required artifact type: $t"
+    echo "Expect exactly 3 zips: bootkit + bootstrap + gitops"
+    exit 5
+  fi
+done
+
+# Resolve bundle id (must match across artifacts if provided)
+BUNDLE_ID=""
+for t in bootkit bootstrap gitops; do
+  if [ -n "${BID_BY_TYPE[$t]:-}" ]; then
+    if [ -z "$BUNDLE_ID" ]; then
+      BUNDLE_ID="${BID_BY_TYPE[$t]}"
+    elif [ "$BUNDLE_ID" != "${BID_BY_TYPE[$t]}" ]; then
+      echo "ERROR: bundle_id mismatch across artifacts."
+      echo "  bootkit:  ${BID_BY_TYPE[bootkit]}"
+      echo "  bootstrap:${BID_BY_TYPE[bootstrap]}"
+      echo "  gitops:   ${BID_BY_TYPE[gitops]}"
+      exit 6
+    fi
+  fi
+done
+if [ -z "$BUNDLE_ID" ]; then
+  BUNDLE_ID="AEVUM_BUNDLE_${TS}"
+  echo "[warn] No bundle_id declared; using generated bundle id: $BUNDLE_ID"
+fi
+
+# Move to inbox with timestamp prefix (clears airlock)
+mkdir -p "$INBOX"
+declare -A INBOX_ZIP
+for t in bootkit bootstrap gitops; do
+  src="${PATH_BY_TYPE[$t]}"
+  base="$(basename "$src")"
+  dest="$INBOX/${TS}__${base}"
+  echo "[zip] Moving into inbox: $dest"
+  mv -f "$src" "$dest"
+  INBOX_ZIP[$t]="$dest"
+done
+
+# Create stage dir
+STAGEDIR="$STAGE/${BUNDLE_ID}__${TS}"
+mkdir -p "$STAGEDIR/zips" "$STAGEDIR/extract" "$STAGEDIR/verify"
+
+# Copy zips into stage
+for t in bootkit bootstrap gitops; do
+  cp -a "${INBOX_ZIP[$t]}" "$STAGEDIR/zips/${t}.zip"
+done
+
+# Extract each
+for t in bootkit bootstrap gitops; do
+  mkdir -p "$STAGEDIR/extract/$t"
+  unzip -q "$STAGEDIR/zips/${t}.zip" -d "$STAGEDIR/extract/$t"
+done
+
+# Locate roots
+BOOT_ROOT="$(find "$STAGEDIR/extract/bootstrap" -maxdepth 5 -type d -name pack -print -quit | xargs -r dirname)"
+if [ -z "$BOOT_ROOT" ]; then
+  echo "ERROR: Could not find bootstrap root containing pack/."
+  exit 7
+fi
+GITOPS_ROOT="$(find "$STAGEDIR/extract/gitops" -maxdepth 5 -type f -name 'PACK_MANIFEST.meta.json' -print -quit | xargs -r dirname)"
+if [ -z "$GITOPS_ROOT" ]; then
+  echo "ERROR: Could not find gitops root containing PACK_MANIFEST.meta.json."
+  exit 8
+fi
+BOOTKIT_ROOT="$STAGEDIR/extract/bootkit"
+maybe="$(find "$STAGEDIR/extract/bootkit" -maxdepth 2 -type f -name 'BOOTKIT_VERSION' -print -quit | xargs -r dirname)"
+if [ -n "$maybe" ]; then
+  BOOTKIT_ROOT="$maybe"
+fi
+
+echo "[root] bootkit:   $BOOTKIT_ROOT"
+echo "[root] bootstrap: $BOOT_ROOT"
+echo "[root] gitops:    $GITOPS_ROOT"
+
+# Verify internal pack manifests (non-destructive)
+VERIFY_OK=1
+
+if [ -f "$BOOTKIT_ROOT/PACK_MANIFEST.sha256" ]; then
+  echo "[verify] bootkit pack manifest..."
+  ( cd "$BOOTKIT_ROOT" && sha256sum -c PACK_MANIFEST.sha256 ) || VERIFY_OK=0
+else
+  echo "[warn] bootkit missing PACK_MANIFEST.sha256"
+  VERIFY_OK=0
+fi
+
+if [ -f "$BOOT_ROOT/pack/PACK_MANIFEST.sha256" ]; then
+  echo "[verify] bootstrap pack manifest..."
+  ( cd "$BOOT_ROOT/pack" && sha256sum -c PACK_MANIFEST.sha256 ) || VERIFY_OK=0
+else
+  echo "[warn] bootstrap missing pack/PACK_MANIFEST.sha256"
+  VERIFY_OK=0
+fi
+
+if [ -f "$GITOPS_ROOT/PACK_MANIFEST.sha256" ]; then
+  echo "[verify] gitops pack manifest..."
+  ( cd "$GITOPS_ROOT" && sha256sum -c PACK_MANIFEST.sha256 ) || VERIFY_OK=0
+else
+  echo "[warn] gitops missing PACK_MANIFEST.sha256"
+  VERIFY_OK=0
+fi
+
+if [ "$VERIFY_OK" -ne 1 ]; then
+  echo "ERROR: Internal manifest verification failed. Nothing applied."
+  exit 9
+fi
+
+# Sync bootstrap tree into CURRENT (legacy-compatible)
+echo "[sync] Updating CURRENT tree..."
+rm -rf "$TMP"/extract_current_"$TS"
+mkdir -p "$TMP"/extract_current_"$TS"
+if command -v rsync >/dev/null 2>&1; then
+  rsync -a --delete "$BOOT_ROOT/" "$CURRENTRENT/"
+else
+  echo "[deps] rsync not present; using safe copy-replace fallback."
+  rm -rf "$CURRENTRENT"/*
+  (cd "$BOOT_ROOT" && tar -cf - .) | (cd "$CURRENTRENT" && tar -xf -)
+fi
+echo "[done] Current updated."
+
+# Write bundle manifest
+ZIP_SHA_BOOTKIT="$(sha256sum "$STAGEDIR/zips/bootkit.zip" | awk '{print $1}')"
+ZIP_SHA_BOOTSTRAP="$(sha256sum "$STAGEDIR/zips/bootstrap.zip" | awk '{print $1}')"
+ZIP_SHA_GITOPS="$(sha256sum "$STAGEDIR/zips/gitops.zip" | awk '{print $1}')"
+
+python3 - <<PY
+import json
+out = {
+  "schema_id": "AEVUM:BUNDLE_MANIFEST:V1",
+  "bundle_id": "${BUNDLE_ID}",
+  "staged_at": "${TS}",
+  "airlock": "${AIRLOCK}",
+  "stage_dir": "${STAGEDIR}",
+  "artifacts": {
+    "bootkit": {
+      "zip": "zips/bootkit.zip",
+      "sha256": "${ZIP_SHA_BOOTKIT}",
+      "root": "${BOOTKIT_ROOT}"
+    },
+    "bootstrap": {
+      "zip": "zips/bootstrap.zip",
+      "sha256": "${ZIP_SHA_BOOTSTRAP}",
+      "root": "${BOOT_ROOT}"
+    },
+    "gitops": {
+      "zip": "zips/gitops.zip",
+      "sha256": "${ZIP_SHA_GITOPS}",
+      "root": "${GITOPS_ROOT}"
+    }
+  },
+  "policy": {
+    "apply_requires_signatures_in_locked_mode": True
+  }
+}
+p="${STAGEDIR}/BUNDLE_MANIFEST.json"
+with open(p,"w",encoding="utf-8") as f:
+  json.dump(out,f,indent=2)
+  f.write("\n")
+print("[manifest] Wrote", p)
+PY
+
+ln -sfn "$STAGEDIR" "$STAGE/current"
+echo "$STAGEDIR" > "$STAGE/CURRENT_BUNDLE"
+
+echo "== STAGED =="
+echo "Bundle:    $BUNDLE_ID"
+echo "Stage dir: $STAGEDIR"
+echo
+echo "Next:"
+echo "  sudo aevum-bootstrap-apply"
+echo
+echo "== DONE =="
+echo "Log saved at: $LOG"
+
+# Optional legacy behavior: apply immediately
+if [ "${1:-}" = "--apply" ]; then
+  echo "[apply] --apply requested; invoking aevum-bootstrap-apply"
+  if command -v aevum-bootstrap-apply >/dev/null 2>&1; then
+    sudo aevum-bootstrap-apply
+  elif [ -x "$CURRENTRENT/pack/bin/aevum-workstation-apply" ]; then
+    echo "[apply] aevum-bootstrap-apply not installed yet; running staged apply from CURRENT..."
+    sudo "$CURRENTRENT/pack/bin/aevum-workstation-apply"
+  else
+    echo "[apply] WARN: apply entrypoint not found (PATH or CURRENT/pack/bin). Apply skipped."
+  fi
+fi

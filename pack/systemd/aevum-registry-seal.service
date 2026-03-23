@@ -1,0 +1,29 @@
+[Unit]
+Description=Aevum Registry Seal (device-bound)
+ConditionPathExists=/var/lib/aevum/workstation/identity/device_ed25519_sk.pem
+After=aevum-identity-bootstrap-workstation.service aevum-tpm-unseal.service
+Wants=aevum-identity-bootstrap-workstation.service aevum-tpm-unseal.service
+Before=aevum-workstation-timechain.service aevum-rrp-printerd.service
+
+[Service]
+Type=oneshot
+RuntimeDirectory=aevum
+RuntimeDirectoryMode=0755
+ExecStart=/usr/local/sbin/aevum_registry_seal.py --base /var/lib/aevum/workstation --registry /etc/aevum/registry --tpm
+RemainAfterExit=yes
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+UMask=0077
+ReadWritePaths=/etc/aevum /var/lib/aevum /run/aevum /var/log
+
+[Install]
+WantedBy=multi-user.target

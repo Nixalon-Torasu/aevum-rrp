@@ -1,0 +1,17 @@
+## Aevum audit rules (root-only exec + module loads) - bounded
+-b 8192
+
+# Execve (all users; high volume!)
+-a always,exit -F arch=b64 -S execve  -k aevum_all_exec
+-a always,exit -F arch=b32 -S execve  -k aevum_all_exec
+
+# Kernel module operations (privileged)
+-a always,exit -F arch=b64 -S init_module -S finit_module -S delete_module  -k aevum_module
+-a always,exit -F arch=b32 -S init_module -S finit_module -S delete_module  -k aevum_module
+
+# Watch Aevum surfaces
+-w /etc/aevum -p wa -k aevum_etc_aevum
+-w /etc/nftables.d -p wa -k aevum_nft
+-w /etc/systemd/system -p wa -k aevum_systemd
+-w /opt/aevum-tools/bin -p wa -k aevum_tools
+-w /opt/aevum-controlplane -p wa -k aevum_controlplane

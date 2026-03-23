@@ -1,0 +1,28 @@
+services:
+  ollama:
+    image: ollama/ollama:0.3.14
+    volumes:
+      - /var/lib/aevum/services/ollama:/root/.ollama
+    networks: [aevum_net]
+    restart: unless-stopped
+    # If you have NVIDIA, set runtime and env; otherwise comment these.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - capabilities: [gpu]
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+    depends_on:
+      - ollama
+    volumes:
+      - /var/lib/aevum/services/open-webui:/app/backend/data
+    networks: [aevum_net]
+    restart: unless-stopped
+
+networks:
+  aevum_net:
+    external: true

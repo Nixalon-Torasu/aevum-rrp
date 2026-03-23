@@ -1,0 +1,19 @@
+{
+  "clients": [
+    {
+      "allowed_receipt_classes": [
+        "core_job_begin",
+        "core_job_end",
+        "user_request",
+        "user_response",
+        "core_policy_note"
+      ],
+      "client_id": "localcore",
+      "ed25519_pub_b64": "",
+      "enabled": false,
+      "role": "core"
+    }
+  ],
+  "generated_at_utc": "2026-02-04T00:00:00Z",
+  "type": "aevum_core_clients_allowlist_v1"
+}

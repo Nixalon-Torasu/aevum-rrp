@@ -1,0 +1,24 @@
+[Unit]
+Description=Aevum Continuity Verification (non-gating)
+
+ConditionPathExists=/var/lib/aevum/workstation/identity/device_ed25519_sk.pem
+[Service]
+Type=oneshot
+RuntimeDirectory=aevum
+RuntimeDirectoryMode=0755
+ExecStart=/opt/aevum-tools/bin/aevum-verify-continuity.py --check-tpm
+User=root
+Group=root
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/aevum /run/aevum /var/log /etc/aevum

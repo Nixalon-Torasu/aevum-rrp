@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# AEVUM_FIX_PY_HEREDOC_TERMINATORS_V1
+set -euo pipefail
+# aevum-tpm-quote: produce a TPM quote over selected PCRs using AK
+# Outputs base64 files suitable for embedding into anchor artifacts.
+
+BASE="/var/lib/aevum"
+INSTANCE="workstation"
+AK_HANDLE=""
+PCRS="0,2,7"
+TPM_PCR_POLICY="/etc/aevum/registry/tpm_pcr_policy.json"
+PCR_BANK="sha256"
+
+if [[ -n "${BANK_OVERRIDE}" ]]; then
+  PCR_BANK="${BANK_OVERRIDE}"
+fi
+
+TPM_POLICY_SHA=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base) BASE="$2"; shift 2;;
+    --instance) INSTANCE="$2"; shift 2;;
+    --ak-handle) AK_HANDLE="$2"; shift 2;;
+    --pcrs) PCRS="$2"; shift 2;;
+    --bank) BANK_OVERRIDE="$2"; shift 2;;
+    --policy) TPM_PCR_POLICY="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+
+[[ "$(id -u)" -eq 0 ]] || { echo "Run as root." >&2; exit 2; }
+
+command -v tpm2_quote >/dev/null 2>&1 || { echo "INFO: tpm2-tools missing; skip"; exit 0; }
+
+TPMDIR="${BASE}/${INSTANCE}/tpm_sign"
+# Load PCR policy (best-effort)
+if [[ -f "${TPM_PCR_POLICY}" ]]; then
+  PCRS="$(python3 - <<'PY' "${TPM_PCR_POLICY}"
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+p=o.get("pcrs",[0,2,7])
+print(",".join(str(int(x)) for x in p))
+PY
+)"
+  PCR_BANK="$(python3 - <<'PY' "${TPM_PCR_POLICY}"
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("bank","sha256"))
+PY
+)"
+  TPM_POLICY_SHA="$(sha256sum "${TPM_PCR_POLICY}" | awk '{print $1}')"
+fi
+
+ak_handle_file="${TPMDIR}/ak.handle"
+ak_pub_pem="${TPMDIR}/ak.pub.pem"
+[[ -z "${AK_HANDLE}" && -f "${ak_handle_file}" ]] && AK_HANDLE="$(cat "${ak_handle_file}")" || true
+[[ -n "${AK_HANDLE}" ]] || { echo "INFO: no AK handle; skip"; exit 0; }
+
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+outdir="${TPMDIR}/quotes"
+mkdir -p "${outdir}"
+chmod 0700 "${outdir}"
+
+msg="${outdir}/quote_${ts}.msg"
+sig="${outdir}/quote_${ts}.sig"
+pcr="${outdir}/quote_${ts}.pcr"
+
+# Create quote
+tpm2_quote -c "${AK_HANDLE}" -l "${PCR_BANK}:${PCRS}" -q "aevum:${ts}" -m "${msg}" -s "${sig}" -o "${pcr}" >/dev/null 2>&1 || {
+  echo "WARN: tpm2_quote failed; skip"
+  exit 0
+}
+
+
+# Capture PCR values (text) for deterministic comparisons
+pcr_text="$(tpm2_pcrread "${PCR_BANK}:${PCRS}" 2>/dev/null || true)"
+pcr_values_json="$(python3 - <<'PY'
+import re, json, os, sys
+txt=os.environ.get("PCR_TEXT","")
+# tpm2_pcrread output example lines: "  0 : 0xABC..."
+vals={}
+for line in txt.splitlines():
+    m=re.search(r'^\s*(\d+)\s*:\s*(0x[0-9A-Fa-f]+)\s*$', line)
+    if m:
+        idx=m.group(1)
+        hx=m.group(2)[2:].lower()
+        vals[idx]=hx
+print(json.dumps(vals, sort_keys=True))
+PY
+)"
+
+# Base64 encode
+b64msg="$(python3 - ${msg} <<'PY'
+import base64,sys
+print(base64.b64encode(open(sys.argv[1],'rb').read()).decode('ascii'))
+PY
+ )"
+b64sig="$(python3 - ${sig} <<'PY'
+import base64,sys
+print(base64.b64encode(open(sys.argv[1],'rb').read()).decode('ascii'))
+PY
+ )"
+b64pcr="$(python3 - ${pcr} <<'PY'
+import base64,sys
+print(base64.b64encode(open(sys.argv[1],'rb').read()).decode('ascii'))
+PY
+ )"
+
+# emit json record
+outjson="${outdir}/quote_${ts}_${PCR_BANK}.json"
+export INSTANCE AK_HANDLE PCRS
+export PCR_BANK TPM_POLICY_SHA TPM_PCR_POLICY
+export PCR_TEXT="${pcr_text}"
+export PCR_VALUES_JSON="${pcr_values_json}"
+export B64MSG="${b64msg}" B64SIG="${b64sig}" B64PCR="${b64pcr}"
+python3 - <<'PY' > "${outjson}"
+import json,os,datetime,platform
+obj={
+  "type":"aevum_tpm_quote_v1",
+  "timestamp_utc": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+  "hostname": platform.node(),
+  "instance": os.environ.get("INSTANCE",""),
+  "ak_handle": os.environ.get("AK_HANDLE",""),
+  "pcrs": os.environ.get("PCRS",""),
+  "pcr_bank": os.environ.get("PCR_BANK","sha256"),
+  "tpm_pcr_policy_sha256": ("sha256:"+os.environ.get("TPM_POLICY_SHA","")) if os.environ.get("TPM_POLICY_SHA","") else "",
+  "tpm_pcr_policy_path": os.environ.get("TPM_PCR_POLICY",""),
+  "quote_msg_b64": os.environ.get("B64MSG",""),
+  "quote_sig_b64": os.environ.get("B64SIG",""),
+  "quote_pcr_b64": os.environ.get("B64PCR",""),
+  "pcr_values": json.loads(os.environ.get("PCR_VALUES_JSON","{}") or "{}"),
+}
+print(json.dumps(obj, indent=2, sort_keys=True))
+PY
+chmod 0600 "${outjson}" || true
+
+if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+  h="$(sha256sum "${outjson}" | awk '{print $1}')"
+  /opt/aevum-tools/bin/aevum-receipt note "tpm quote" component=tpm file="${outjson}" manifest="sha256:${h}" instance="${INSTANCE}" ak_handle="${AK_HANDLE}" || true
+fi
+
+echo "OK: ${outjson}"

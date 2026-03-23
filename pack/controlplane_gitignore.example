@@ -1,0 +1,8 @@
+# Aevum controlplane - local exclusions
+.venv/
+*.retry
+__pycache__/
+*.log
+
+# Do not track machine secrets / receipts in controlplane
+/var/lib/aevum/**

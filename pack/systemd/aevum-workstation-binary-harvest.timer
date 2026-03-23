@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Aevum Binary Harvest every 5 minutes
+
+[Timer]
+OnBootSec=180s
+OnUnitActiveSec=300s
+AccuracySec=20s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

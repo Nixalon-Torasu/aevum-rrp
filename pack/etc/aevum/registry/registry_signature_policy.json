@@ -1,0 +1,7 @@
+{
+  "generated_at_utc": "2026-02-04T00:00:00Z",
+  "require_gpg_per_file": false,
+  "require_manifest_ed25519": true,
+  "require_manifest_tpm": true,
+  "type": "aevum_registry_signature_policy_v1"
+}

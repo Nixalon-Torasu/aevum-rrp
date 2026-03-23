@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BIND_DIR="/etc/aevum/appliance/bind"
+EVID_DIR="/var/lib/aevum/appliance/evidence"
+
+mkdir -p "${BIND_DIR}" "${EVID_DIR}"
+
+fingerprint() {
+  local mid uuid board prod
+  mid="$(cat /etc/machine-id 2>/dev/null || true)"
+  uuid="$(cat /sys/class/dmi/id/product_uuid 2>/dev/null || true)"
+  board="$(cat /sys/class/dmi/id/board_serial 2>/dev/null || true)"
+  prod="$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)"
+  printf '%s\n' "${mid}|${uuid}|${board}|${prod}" | sha256sum | awk '{print $1}'
+}
+
+bind_now() {
+  local fp ts
+  fp="$(fingerprint)"
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  jq -n --arg schema "AEVUM:APPLIANCE:BOUND_HOST:V1" --arg ts "${ts}" --arg fp "${fp}" \
+    '{schema_id:$schema,bound_at:$ts,fingerprint_sha256:$fp}' > "${BIND_DIR}/bound_host.json"
+  chmod 600 "${BIND_DIR}/bound_host.json"
+  echo "OK: bound to host fingerprint ${fp}"
+}
+
+status() {
+  echo "=== Aevum Appliance Status ==="
+  echo "fingerprint=$(fingerprint)"
+  if [[ -f "${BIND_DIR}/bound_host.json" ]]; then
+    echo "bound_host.json:"
+    cat "${BIND_DIR}/bound_host.json"
+  else
+    echo "Not bound yet."
+  fi
+  echo
+  echo "Aevum services:"
+  systemctl list-units 'aevum-*' --all --no-pager || true
+  echo
+  echo "Memory mount:"
+  findmnt /var/lib/aevum/workstation || true
+}
+
+tpm_status() {
+  /usr/local/sbin/aevum-tpmctl status || true
+}
+
+prepare_move() {
+  local ts
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  systemctl stop 'aevum-*' >/dev/null 2>&1 || true
+
+  /usr/local/sbin/aevum_token.py create \
+    --out "${BIND_DIR}/move_token.json" \
+    --sig "${BIND_DIR}/move_token.sig.b64" \
+    --expires-hours 24 \
+    --reason "operator prepared move at ${ts}"
+  chmod 600 "${BIND_DIR}/move_token.json" "${BIND_DIR}/move_token.sig.b64" || true
+
+  # Make migration possible: remove TPM enrollment so disk can be unlocked via passphrase on new host.
+  /usr/local/sbin/aevum-tpmctl wipe-root || true
+
+  echo "OK: move prepared (valid 24h). Now shutdown, then unplug:"
+  echo "  sudo shutdown -h now"
+}
+
+rebind() {
+  if ! /usr/local/sbin/aevum_token.py verify --token "${BIND_DIR}/move_token.json" --sig "${BIND_DIR}/move_token.sig.b64" >/dev/null 2>&1; then
+    echo "FAIL: no valid move token. Rebind denied."
+    exit 3
+  fi
+  bind_now
+  rm -f "${BIND_DIR}/move_token.json" "${BIND_DIR}/move_token.sig.b64" || true
+
+  # Re-enroll TPM unlock on this new host (if TPM present).
+  /usr/local/sbin/aevum-tpmctl bind-root || true
+
+  echo "OK: rebound. Now configure memory for this machine:"
+  echo "  sudo aevum-memoryctl init"
+}
+
+evidence() {
+  local ts out
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  out="${EVID_DIR}/evidence_${ts}"
+  mkdir -p "${out}"
+
+  uname -a > "${out}/uname.txt" || true
+  lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL,SERIAL > "${out}/lsblk.txt" || true
+  systemctl list-units 'aevum-*' --all --no-pager > "${out}/systemd_units.txt" || true
+
+  journalctl -u aevum-workstation-timechain.service --no-pager > "${out}/J_timechain.log" 2>/dev/null || true
+  journalctl -u aevum-rrp-printerd.service --no-pager > "${out}/J_rrp_printerd.log" 2>/dev/null || true
+
+  /usr/local/sbin/aevum-tpmctl status > "${out}/tpm_status.txt" 2>&1 || true
+
+  if [[ -x /opt/aevum-tools/bin/aevum-status ]]; then
+    /opt/aevum-tools/bin/aevum-status --base /var/lib/aevum/workstation > "${out}/aevum_status.txt" 2>&1 || true
+  fi
+  if [[ -x /usr/local/sbin/aevum_verify.py ]]; then
+    /usr/local/sbin/aevum_verify.py --base /var/lib/aevum/workstation --chain T --warn-gaps > "${out}/verify_T.txt" 2>&1 || true
+  fi
+
+  tar -C "${out}/.." -czf "${out}.tgz" "$(basename "${out}")"
+  echo "OK: ${out}.tgz"
+}
+
+cmd="${1:-}"
+case "${cmd}" in
+  bind) bind_now;;
+  status) status;;
+  tpm-status) tpm_status;;
+  prepare-move) prepare_move;;
+  rebind) rebind;;
+  evidence) evidence;;
+  *) echo "Usage: aevum-appliance {bind|status|tpm-status|prepare-move|rebind|evidence}"; exit 2;;
+esac

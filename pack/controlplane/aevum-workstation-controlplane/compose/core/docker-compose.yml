@@ -1,0 +1,85 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: authentik
+      POSTGRES_PASSWORD: ${AUTHENTIK_POSTGRES_PASSWORD}
+      POSTGRES_DB: authentik
+    volumes:
+      - /var/lib/aevum/services/authentik/postgres:/var/lib/postgresql/data
+    networks: [aevum_net]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - /var/lib/aevum/services/authentik/redis:/data
+    networks: [aevum_net]
+    restart: unless-stopped
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2025.8.0
+    environment:
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
+      AUTHENTIK_POSTGRESQL__HOST: postgres
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRES_PASSWORD}
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_REDIS__HOST: redis
+    volumes:
+      - /var/lib/aevum/services/authentik/media:/media
+      - /var/lib/aevum/services/authentik/templates:/templates
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks: [aevum_net]
+    restart: unless-stopped
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2025.8.0
+    environment:
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
+      AUTHENTIK_POSTGRESQL__HOST: postgres
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRES_PASSWORD}
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_REDIS__HOST: redis
+    volumes:
+      - /var/lib/aevum/services/authentik/media:/media
+      - /var/lib/aevum/services/authentik/templates:/templates
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks: [aevum_net]
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    # DO NOT publish ports publicly by default. Use ingressctl to open LAN ports if needed.
+    # ports:
+    #   - "80:80"
+    #   - "443:443"
+    environment:
+      AEVUM_DOMAIN: ${AEVUM_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /var/lib/aevum/services/caddy/data:/data
+      - /var/lib/aevum/services/caddy/config:/config
+    depends_on:
+      - authentik-server
+    networks: [aevum_net]
+    restart: unless-stopped
+
+networks:
+  aevum_net:
+    external: true

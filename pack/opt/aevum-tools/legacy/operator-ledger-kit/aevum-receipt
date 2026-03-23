@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Usage:
+#   aevum-receipt <kind> "<message>" [key=value ...]
+#
+# Example:
+#   aevum-receipt note "Ingress dedupe verified" component=ingressctl result=pass
+
+if [[ $# -lt 2 ]]; then
+  echo "Usage: aevum-receipt <kind> \"<message>\" [key=value ...]" >&2
+  exit 2
+fi
+
+KIND="$1"; shift
+MSG="$1"; shift
+
+# Build --kv args from key=value pairs
+KV_ARGS=()
+for kv in "$@"; do
+  if [[ "$kv" != *"="* ]]; then
+    echo "Bad kv (expected key=value): $kv" >&2
+    exit 2
+  fi
+  KV_ARGS+=( --kv "$kv" )
+done
+
+# Create receipt; capture output
+OUT="$(
+  aevum-receiptctl --kind "$KIND" --message "$MSG" "${KV_ARGS[@]}" 2>&1 | tee /dev/stderr
+)"
+
+# Extract the receipt path (aevum-receiptctl prints the JSON path)
+REC="$(printf '%s\n' "$OUT" | grep -Eo '/var/lib/aevum/ledger/receipts/[0-9]{8}/[^[:space:]]+\.json' | tail -n 1 || true)"
+if [[ -z "${REC:-}" ]]; then
+  echo "ERROR: Could not determine receipt path from output." >&2
+  exit 1
+fi
+
+echo
+echo "=== RECEIPT ==="
+echo "$REC"
+ls -l "$REC" "$REC.leaf" "$REC.leaf.sig"
+
+echo
+echo "=== LEAF ==="
+cat "$REC.leaf"
+
+echo
+echo "=== SIGNATURE VERIFY ==="
+ssh-keygen -Y verify \
+  -f ~/.config/aevum-ledger/allowed_signers \
+  -I torasu \
+  -n file \
+  -s "$REC.leaf.sig" \
+  < "$REC.leaf"
+
+echo
+echo "=== FINALIZE ==="
+sudo systemctl start aevum-ledger-finalize.service 2>/dev/null || sudo /usr/local/bin/aevum-ledger-finalize
+
+# Informational: show expected minute window
+CREATED="$(
+  python3 - "$REC" <<'PY' 2>/dev/null || true
+import json, sys
+p = sys.argv[1]
+obj = json.load(open(p, "r", encoding="utf-8"))
+print(obj.get("created_utc", ""))
+PY
+)"
+
+echo
+if [[ -n "${CREATED:-}" ]]; then
+  WIN_START="${CREATED:0:16}:00Z"
+  echo "Receipt created_utc=$CREATED"
+  echo "Expected window: ${WIN_START} → (next minute)"
+else
+  echo "Receipt created_utc missing (cannot compute expected window)"
+fi
+
+# Locate the block that references this receipt (if already finalized)
+BASENAME="$(basename "$REC")"
+HIT="$(
+  grep -R --line-number -- "$BASENAME" /var/lib/aevum/ledger/blocks/*/human.md 2>/dev/null \
+    | tail -n 1 \
+    | cut -d: -f1 \
+    || true
+)"
+
+echo
+if [[ -n "${HIT:-}" ]]; then
+  echo "Receipt appears in: $HIT"
+  echo
+  tail -n 80 "$HIT"
+else
+  echo "Receipt not referenced in any finalized block yet (window likely not closed)."
+  echo "Latest block page:"
+  echo
+  LATEST="$(ls -1 /var/lib/aevum/ledger/blocks 2>/dev/null | tail -n 1 || true)"
+  [[ -n "${LATEST:-}" ]] && tail -n 80 "/var/lib/aevum/ledger/blocks/$LATEST/human.md" || true
+fi

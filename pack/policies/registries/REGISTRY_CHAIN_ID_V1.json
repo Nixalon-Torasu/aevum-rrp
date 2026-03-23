@@ -1,0 +1,42 @@
+{
+  "chains": [
+    {
+      "chain_id_u8": 1,
+      "chain_label": "P",
+      "name": "Perception"
+    },
+    {
+      "chain_id_u8": 2,
+      "chain_label": "R",
+      "name": "Reality"
+    },
+    {
+      "chain_id_u8": 3,
+      "chain_label": "PHI",
+      "name": "Physiology"
+    },
+    {
+      "chain_id_u8": 4,
+      "chain_label": "I",
+      "name": "Interaction"
+    },
+    {
+      "chain_id_u8": 5,
+      "chain_label": "T",
+      "name": "Time"
+    }
+  ],
+  "note": "Year-1: chain_id mapping is fixed to the five chains in Aevum Spec 1.",
+  "reserved": [
+    {
+      "purpose": "future / extensions",
+      "range": "6-250"
+    },
+    {
+      "purpose": "implementation reserved",
+      "range": "251-255"
+    }
+  ],
+  "schema": "AEVUM:REGISTRY:CHAIN_ID:V1",
+  "version": "1.0.0"
+}

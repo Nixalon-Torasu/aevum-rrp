@@ -1,0 +1,34 @@
+[Unit]
+Description=Aevum Core Optimizer (optional checkpoints)
+ConditionPathExists=/var/lib/aevum/workstation/identity/device_ed25519_sk.pem
+After=aevum-workstation-timechain.service
+Wants=aevum-workstation-timechain.service
+
+[Service]
+Type=simple
+RuntimeDirectory=aevum
+RuntimeDirectoryMode=0755
+ExecStart=/usr/local/sbin/aevum_core_optimizer.py --workstation-base /var/lib/aevum/workstation --core-base /var/lib/aevum/core --chain T
+Restart=always
+RestartSec=10
+
+
+
+
+
+# --- Aevum service hardening (data-plane, non-gating) ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+UMask=0077
+ReadWritePaths=/var/lib/aevum /run/aevum /var/log /etc/aevum
+
+[Install]
+WantedBy=multi-user.target

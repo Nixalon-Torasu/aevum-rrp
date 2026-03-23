@@ -1,0 +1,27 @@
+[Unit]
+Description=Aevum LUKS Sweep Snapshot (non-gating)
+ConditionPathExists=/var/lib/aevum/workstation/identity/device_ed25519_sk.pem
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/aevum_luks_sweep.py
+User=root
+Group=root
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+ReadWritePaths=/var/lib/aevum /etc/aevum
+
+[Install]
+WantedBy=multi-user.target

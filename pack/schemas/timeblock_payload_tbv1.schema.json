@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "commit_delta": {
+      "type": "object"
+    },
+    "eventlog_ref": {
+      "type": "string"
+    },
+    "eventlog_sha256": {
+      "type": "string"
+    },
+    "flags": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "mint_policy_sha256": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "monotime_ns": {
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "TBV1"
+    },
+    "time_block_id": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "tpm_anchor_ref": {
+      "type": "string"
+    },
+    "tpm_anchor_sha256": {
+      "type": "string"
+    },
+    "type": {
+      "const": "TimeBlockPayload"
+    },
+    "wallclock_unix": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "type",
+    "schema_version",
+    "time_block_id",
+    "wallclock_unix",
+    "monotime_ns",
+    "commit_delta",
+    "flags"
+  ],
+  "title": "Aevum TimeBlockPayload TBV1",
+  "type": "object"
+}

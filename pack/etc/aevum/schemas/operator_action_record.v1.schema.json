@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aevum.operator.action_record.v1",
+  "title": "Aevum Operator Action Record v1",
+  "type": "object",
+  "required": [
+    "ts_utc",
+    "action_kind",
+    "actor",
+    "pre_state",
+    "post_state",
+    "outcome",
+    "details"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "ts_utc": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{6}Z$"
+    },
+    "action_kind": {
+      "type": "string",
+      "enum": [
+        "release_key_rotate",
+        "receipts_wipe",
+        "factory_reset",
+        "rollback_apply",
+        "identity_wipe",
+        "set_mode"
+      ]
+    },
+    "actor": {
+      "type": "object",
+      "required": [
+        "sudo_user",
+        "uid"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "sudo_user": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "uid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "pre_state": {
+      "$ref": "#/$defs/state"
+    },
+    "post_state": {
+      "$ref": "#/$defs/state"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "partial",
+        "failed"
+      ]
+    },
+    "details": {
+      "type": "object",
+      "required": [
+        "bounded_reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "bounded_reason": {
+          "type": "string",
+          "enum": [
+            "operator_initiated",
+            "drift_recovery",
+            "device_repurpose",
+            "postmortem_reset",
+            "bundle_recovery"
+          ]
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "maxItems": 4096
+        },
+        "selected_bundle_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "previous_bundle_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "new_release_key_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "old_release_key_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "new_pubkey_b64": {
+          "type": "string",
+          "minLength": 40,
+          "maxLength": 128
+        },
+        "identity_wiped": {
+          "type": "boolean"
+        },
+        "tpm_rotated": {
+          "type": "boolean"
+        },
+        "timechain_tip_event_hash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      }
+    },
+    "receipt_bridge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "receipt_event_hash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "receipt_payload_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    }
+  },
+  "$defs": {
+    "state": {
+      "type": "object",
+      "required": [
+        "trust_epoch",
+        "evidence_epoch",
+        "identity_epoch",
+        "release_key_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "trust_epoch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "evidence_epoch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "identity_epoch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "release_key_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

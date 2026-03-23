@@ -1,0 +1,11 @@
+[Unit]
+Description=Aevum IMA Snapshot Anchor (hourly)
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=1h
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

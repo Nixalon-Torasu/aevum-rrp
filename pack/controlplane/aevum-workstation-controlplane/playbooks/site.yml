@@ -1,0 +1,10 @@
+---
+- name: Aevum Workstation Baseline
+  hosts: localhost
+  become: true
+  roles:
+    - role: common
+    - role: aevum_layout
+    - role: docker_engine
+    - role: aevum_tools_patch
+    - role: daily_root

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+echo "WARN: aevum-bootstrap-apply is deprecated; use aevum-workstation-apply" >&2
+CURRENT="${AEVUM_BOOTSTRAP_CURRENT:-/srv/aevum-hot/bootstrap/current}"
+if [ -x "${CURRENT}/pack/bin/aevum-workstation-apply" ]; then
+  exec "${CURRENT}/pack/bin/aevum-workstation-apply" "$@"
+fi
+# Fallback: if running from within pack
+if command -v aevum-workstation-apply >/dev/null 2>&1; then
+  exec aevum-workstation-apply "$@"
+fi
+echo "ERROR: aevum-workstation-apply not found." >&2
+exit 2

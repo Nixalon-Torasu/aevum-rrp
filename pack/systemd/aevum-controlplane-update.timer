@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Aevum Controlplane Update+Apply periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=6h
+AccuracySec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

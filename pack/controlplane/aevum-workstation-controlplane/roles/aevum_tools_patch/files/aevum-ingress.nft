@@ -1,0 +1,9 @@
+# Aevum ingress base table (authoritative default-deny, logged)
+# This file defines tables/chains; enforcement is performed by ingressctl.
+# - priority -100 ensures this runs before distro default-ACCEPT chains.
+# - policy drop makes "deny by default" real.
+table inet aevum_ingress {
+  chain input {
+    type filter hook input priority -100; policy drop;
+  }
+}
