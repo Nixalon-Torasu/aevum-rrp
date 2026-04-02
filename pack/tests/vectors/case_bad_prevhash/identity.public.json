@@ -1,0 +1,13 @@
+{
+  "key": {
+    "kid": "ed25519:sha256:3f71639bb93aa3f2",
+    "public_key_b64": "vM2CSKXnYPl95j1en+opizuXWTK9P6yZrJ1ZuPhBlF4="
+  },
+  "keys": {
+    "device_signing_key": {
+      "kid": "ed25519:sha256:3f71639bb93aa3f2",
+      "public_key_b64": "vM2CSKXnYPl95j1en+opizuXWTK9P6yZrJ1ZuPhBlF4="
+    }
+  },
+  "schema": "AEVUM:IDENTITY:PUBLIC:V1"
+}

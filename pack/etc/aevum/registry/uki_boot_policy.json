@@ -1,0 +1,11 @@
+{
+  "date": "2026-02-04",
+  "defaults": {
+    "allow_set_bootnext": true,
+    "allow_set_bootorder": true,
+    "esp_mount": "/boot/efi",
+    "uki_dir": "/boot/efi/EFI/Linux"
+  },
+  "non_gating": true,
+  "type": "aevum_uki_boot_policy_v1"
+}

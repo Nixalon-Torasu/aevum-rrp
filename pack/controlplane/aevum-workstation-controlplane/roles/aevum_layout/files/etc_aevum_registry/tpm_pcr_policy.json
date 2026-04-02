@@ -1,0 +1,20 @@
+{
+  "bank": "sha256",
+  "bank_fallback": "sha256",
+  "bank_primary": "sha256",
+  "banks": [
+    "sha256",
+    "sha384"
+  ],
+  "mode": "observe",
+  "notes": "Workstation foundation policy: evidence + commitments only (non-gating).",
+  "pcrs": [
+    0,
+    2,
+    7
+  ],
+  "purpose": "boot_integrity_evidence_and_commit",
+  "quote_qualifying_data_prefix": "aevum",
+  "schema": "AEVUM:TPM:PCR_POLICY:V1",
+  "version": "1.1.0"
+}

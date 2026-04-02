@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "AEVUM:RRP:SUPPLY_CHAIN_RECEIPT:V1",
+  "title": "Aevum Supply Chain Receipt",
+  "description": "Receipt emitted by Aevum-Printer for supply-chain verification and apply events. References OpenSSF materials by digest. Does not embed the full provenance payload.",
+  "type": "object",
+  "required": ["schema_id", "receipt_type", "result", "emitted_at"],
+  "properties": {
+    "schema_id": {
+      "type": "string",
+      "const": "AEVUM:RRP:SUPPLY_CHAIN_RECEIPT:V1"
+    },
+    "receipt_type": {
+      "type": "string",
+      "enum": [
+        "supply_chain_bundle_seen",
+        "supply_chain_digest_verified",
+        "supply_chain_sig_verified",
+        "supply_chain_layout_verified",
+        "supply_chain_slsa_verified",
+        "supply_chain_policy_pass",
+        "supply_chain_policy_fail",
+        "profile_accept",
+        "profile_reject",
+        "profile_apply_started",
+        "profile_apply_succeeded",
+        "profile_apply_failed",
+        "service_healthcheck_pass",
+        "service_healthcheck_fail",
+        "drift_detected",
+        "drift_remediated"
+      ]
+    },
+    "result": {
+      "type": "string",
+      "enum": ["pass", "fail", "skip", "warn"]
+    },
+    "detail": {
+      "type": "string",
+      "description": "Human-readable detail for the result."
+    },
+    "bundle_dir": {
+      "type": "string",
+      "description": "Absolute path to the staged bundle directory on this machine."
+    },
+    "bundle_id": {
+      "type": "string",
+      "description": "Bundle ID from AEVUM_ARTIFACT.json, if available."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["install", "maintenance", "locked", "estop"]
+    },
+    "emitted_at": {
+      "type": "string",
+      "description": "ISO 8601 UTC timestamp."
+    },
+    "provenance_refs": {
+      "type": "object",
+      "description": "Digests of OpenSSF materials accepted by this machine. Pointers, not payloads.",
+      "properties": {
+        "profile_bundle_digest":     { "type": "string" },
+        "slsa_provenance_digest":    { "type": "string" },
+        "intoto_attestation_digest": { "type": "string" },
+        "sigstore_bundle_digest":    { "type": "string" },
+        "signer_identity":           { "type": "string" },
+        "rekor_log_entry":           { "type": "string" }
+      }
+    },
+    "machine_binding": {
+      "type": "object",
+      "description": "Local machine identity and state at the time of this receipt.",
+      "properties": {
+        "device_id":          { "type": "string" },
+        "tpm_ek_sha256":      { "type": "string" },
+        "tpm_ak_sha256":      { "type": "string" },
+        "pcr_map_digest":     { "type": "string" },
+        "policy_version":     { "type": "string" },
+        "apply_result":       { "type": "string" },
+        "healthcheck_result": { "type": "string" }
+      }
+    }
+  }
+}

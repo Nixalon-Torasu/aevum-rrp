@@ -1,0 +1,111 @@
+{
+  "content": {
+    "params": {
+      "APPROVAL_SCHEME": "THRESHOLD_M_OF_N",
+      "COOLDOWN_CHAIN_MODE": "STRICT_CONTIGUOUS",
+      "COOLDOWN_HEARTBEAT_GRACE_SECONDS": 120,
+      "COOLDOWN_HEARTBEAT_INTERVAL_SECONDS": 600,
+      "COOLDOWN_MIN_HEARTBEAT_FRACTION": 0.95,
+      "COOLDOWN_REQUIRES_HEARTBEATS": true,
+      "COUNTER_IDS_REQUIRED": [
+        "nv:boot_counter:001",
+        "nv:gov_counter:001",
+        "nv:att_counter:001"
+      ],
+      "COUNTER_KIND": "TPM_NV_COUNTER",
+      "EMERGENCY_ALLOWLIST_MAX_AGE_DAYS": 7,
+      "FINALIZE_MAX_ATTESTATION_AGE_SECONDS": 120,
+      "FINALIZE_MAX_COUNTER_RECEIPT_AGE_SECONDS": 300,
+      "FINALIZE_MAX_QUORUM_ANCHOR_AGE_SECONDS": 120,
+      "FINALIZE_REQUIRES_CANARY_CURRENT": true,
+      "FINALIZE_REQUIRES_COUNTER_ADVANCE": true,
+      "FINALIZE_REQUIRES_FEDERATION_QUORUM": true,
+      "KEY_RATE_LIMITS": {
+        "SIGN_ATTESTATION": {
+          "burst": 10,
+          "per_second": 2
+        },
+        "SIGN_COOLDOWN_HEARTBEAT": {
+          "burst": 3,
+          "per_second": 1
+        },
+        "SIGN_EVENT": {
+          "burst": 200,
+          "per_second": 50
+        },
+        "SIGN_GOVERNANCE": {
+          "burst": 2,
+          "per_second": 1
+        },
+        "SIGN_NODE_ANCHOR": {
+          "burst": 50,
+          "per_second": 10
+        },
+        "SIGN_REGISTRY": {
+          "burst": 5,
+          "per_second": 1
+        },
+        "SIGN_THRESHOLD_SHARE": {
+          "burst": 5,
+          "per_second": 1
+        },
+        "SIGN_TICK": {
+          "burst": 20,
+          "per_second": 5
+        },
+        "SIGN_TRIPWIRE": {
+          "burst": 5,
+          "per_second": 1
+        }
+      },
+      "LOCKDOWN_ON_COOLDOWN_VIOLATION": true,
+      "LOCKDOWN_ON_COUNTER_NONMONOTONIC": true,
+      "LOCKDOWN_ON_EMERGENCY_EXPIRED": true,
+      "LOCKDOWN_ON_FRESHNESS_VIOLATION": true,
+      "LOCKDOWN_ON_HEARTBEAT_VIOLATION": true,
+      "LOCKDOWN_ON_MAINT_WINDOW_VIOLATION": true,
+      "LOCKDOWN_ON_THRESHOLD_FAILURE": true,
+      "MAINTENANCE_WINDOWS_UTC": [
+        {
+          "dow": [
+            "SAT"
+          ],
+          "end": "05:00",
+          "start": "01:00"
+        },
+        {
+          "dow": [
+            "SUN"
+          ],
+          "end": "05:00",
+          "start": "01:00"
+        }
+      ],
+      "MAX_FINALIZE_DELAY_SECONDS": 172800,
+      "MIN_FINALIZE_DELAY_SECONDS": 3600,
+      "REQUIRE_ATTESTATION_BIND_ON_FINALIZE": true,
+      "REQUIRE_DEVICE_REGISTRY": true,
+      "REQUIRE_KEY_USE_RECEIPTS_FOR": [
+        "SIGN_TICK",
+        "SIGN_ATTESTATION",
+        "SIGN_REGISTRY",
+        "SIGN_GOVERNANCE",
+        "SIGN_THRESHOLD_SHARE",
+        "SIGN_NODE_ANCHOR",
+        "SIGN_TRIPWIRE",
+        "SIGN_COOLDOWN_HEARTBEAT"
+      ],
+      "REQUIRE_MONOTONIC_COUNTERS": true,
+      "REQUIRE_NODE_REGISTRY": true,
+      "REQUIRE_TWO_PHASE_FINALIZE": true,
+      "THRESHOLD_ALG": "FROST_ED25519",
+      "THRESHOLD_GROUP_ID": "AEVUM:THRESHOLDGROUP:GOVERNANCE:V1",
+      "THRESHOLD_M": 3,
+      "THRESHOLD_N": 5
+    },
+    "policy_id": "AEVUM:GOVPOLICY:V1",
+    "policy_version": "1.7.0",
+    "registry_digest": "47ebe3212101100e7c4faffcee863b301b8808ec5e0d312a4974457509f24bd8",
+    "type": "GovernancePolicy"
+  }
+}

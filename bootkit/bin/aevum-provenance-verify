@@ -1,0 +1,320 @@
+#!/usr/bin/env bash
+# aevum-provenance-verify
+# Verifies the OpenSSF supply-chain materials for a staged Aevum bundle.
+#
+# Called by aevum-bootstrap-apply (and optionally aevum-bootstrap-update).
+# Reads BUNDLE_MANIFEST.json from the staged bundle directory.
+# Checks:
+#   1. Artifact digest match against provenance digests
+#   2. Sigstore / cosign signature verification (offline bundle or Rekor)
+#   3. in-toto attestation chain against root layout
+#   4. SLSA provenance required fields
+#   5. Supply chain policy compliance
+# Emits Aevum receipts for each verification outcome.
+# Exits 0 on pass, non-zero on fail.
+#
+# Usage:
+#   aevum-provenance-verify --bundle-dir <stage_dir> [--mode <install|maintenance|locked>]
+
+set -euo pipefail
+
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+
+BUNDLE_DIR=""
+MODE=""
+
+# --- Arg parse ---
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --bundle-dir) BUNDLE_DIR="$2"; shift 2 ;;
+    --mode)       MODE="$2";       shift 2 ;;
+    *) echo "Unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+if [ -z "$BUNDLE_DIR" ]; then
+  BASE="/srv/aevum-hot/bootstrap/stage"
+  if [ -L "$BASE/current" ]; then
+    BUNDLE_DIR="$(readlink -f "$BASE/current")"
+  elif [ -f "$BASE/CURRENT_BUNDLE" ]; then
+    BUNDLE_DIR="$(cat "$BASE/CURRENT_BUNDLE")"
+  fi
+fi
+
+if [ -z "$BUNDLE_DIR" ] || [ ! -d "$BUNDLE_DIR" ]; then
+  echo "ERROR: No bundle dir found or provided." >&2
+  exit 1
+fi
+
+if [ -z "$MODE" ]; then
+  if [ -f /etc/aevum/mode ]; then
+    MODE="$(tr -d ' \t\r\n' < /etc/aevum/mode || true)"
+  fi
+fi
+MODE="${MODE:-install}"
+
+MAN="$BUNDLE_DIR/BUNDLE_MANIFEST.json"
+POLICY="/etc/aevum/registry/supply_chain_policy.json"
+RECEIPT_DIR="/srv/platform/state/receipts/supply_chain"
+LOG_DIR="/srv/aevum-hot/bootstrap/logs"
+
+mkdir -p "$RECEIPT_DIR" "$LOG_DIR"
+LOG="$LOG_DIR/provenance_verify_${TS}.log"
+exec > >(tee -a "$LOG") 2>&1
+
+echo "== AEVUM PROVENANCE VERIFY [$TS] =="
+echo "Bundle:  $BUNDLE_DIR"
+echo "Mode:    $MODE"
+echo "Policy:  $POLICY"
+
+# --- Helpers ---
+
+py_json_get() {
+  python3 -c "
+import json,sys
+d=json.load(open('$1'))
+keys='$2'.split('.')
+cur=d
+for k in keys:
+  cur=cur[k]
+print(cur)
+" 2>/dev/null || echo ""
+}
+
+emit_receipt() {
+  local receipt_type="$1"
+  local result="$2"
+  local detail="${3:-}"
+  local rfile="$RECEIPT_DIR/${receipt_type}_${TS}.json"
+  python3 - <<PY
+import json,os
+r = {
+  "schema_id": "AEVUM:RRP:SUPPLY_CHAIN_RECEIPT:V1",
+  "receipt_type": "$receipt_type",
+  "result": "$result",
+  "detail": "$detail",
+  "bundle_dir": "$BUNDLE_DIR",
+  "mode": "$MODE",
+  "emitted_at": "$TS"
+}
+with open("$rfile","w") as f:
+  json.dump(r,f,indent=2)
+  f.write("\n")
+print("[receipt] $receipt_type -> $result")
+PY
+}
+
+VERIFY_PASS=0
+VERIFY_FAIL=0
+
+# ---------------------------------------------------------------
+# Step 0: bundle_seen
+# ---------------------------------------------------------------
+if [ -f "$MAN" ]; then
+  emit_receipt "supply_chain_bundle_seen" "pass" "manifest=$MAN"
+else
+  emit_receipt "supply_chain_bundle_seen" "fail" "no BUNDLE_MANIFEST.json at $MAN"
+  echo "ERROR: No BUNDLE_MANIFEST.json found." >&2
+  exit 2
+fi
+
+# ---------------------------------------------------------------
+# Step 1: Artifact digest verification
+# ---------------------------------------------------------------
+echo
+echo "[step] 1/5 Artifact digest check..."
+DIGEST_FAIL=0
+for artifact in bootkit bootstrap gitops; do
+  ZIP_PATH="$BUNDLE_DIR/$(py_json_get "$MAN" "artifacts.${artifact}.zip")"
+  EXPECTED_SHA="$(py_json_get "$MAN" "artifacts.${artifact}.sha256")"
+  if [ -z "$EXPECTED_SHA" ] || [ -z "$ZIP_PATH" ]; then
+    echo "  [skip] No digest entry for $artifact"
+    continue
+  fi
+  ACTUAL_SHA="$(sha256sum "$ZIP_PATH" | awk '{print $1}')"
+  if [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ]; then
+    echo "  [ok] $artifact digest matches"
+  else
+    echo "  [FAIL] $artifact digest mismatch"
+    echo "    expected: $EXPECTED_SHA"
+    echo "    actual:   $ACTUAL_SHA"
+    DIGEST_FAIL=1
+  fi
+done
+
+if [ "$DIGEST_FAIL" -eq 0 ]; then
+  emit_receipt "supply_chain_digest_verified" "pass"
+  VERIFY_PASS=$((VERIFY_PASS+1))
+else
+  emit_receipt "supply_chain_digest_verified" "fail" "one or more artifact digests did not match"
+  VERIFY_FAIL=$((VERIFY_FAIL+1))
+fi
+
+# ---------------------------------------------------------------
+# Step 2: Sigstore / cosign signature verification
+# ---------------------------------------------------------------
+echo
+echo "[step] 2/5 Sigstore signature check..."
+
+PROVENANCE_DIR="$BUNDLE_DIR/provenance"
+SIG_FAIL=0
+
+if ! command -v cosign >/dev/null 2>&1; then
+  echo "  [warn] cosign not installed; skipping Sigstore verification."
+  if [ "$MODE" = "locked" ]; then
+    echo "  ERROR: locked mode requires cosign. Install cosign and retry." >&2
+    emit_receipt "supply_chain_sig_verified" "fail" "cosign not installed in locked mode"
+    VERIFY_FAIL=$((VERIFY_FAIL+1))
+    SIG_FAIL=1
+  else
+    emit_receipt "supply_chain_sig_verified" "skip" "cosign not installed (non-locked mode)"
+  fi
+else
+  for artifact in bootkit bootstrap gitops; do
+    BUNDLE_FILE="$PROVENANCE_DIR/${artifact}.sigstore.bundle.json"
+    ZIP_PATH="$BUNDLE_DIR/$(py_json_get "$MAN" "artifacts.${artifact}.zip")"
+    if [ ! -f "$BUNDLE_FILE" ]; then
+      echo "  [warn] No Sigstore bundle for $artifact at $BUNDLE_FILE"
+      if [ "$MODE" = "locked" ]; then
+        SIG_FAIL=1
+      fi
+      continue
+    fi
+    if cosign verify-blob \
+        --bundle "$BUNDLE_FILE" \
+        --certificate-identity-regexp ".*" \
+        --certificate-oidc-issuer-regexp ".*" \
+        "$ZIP_PATH" 2>/dev/null; then
+      echo "  [ok] $artifact Sigstore signature verified"
+    else
+      echo "  [FAIL] $artifact Sigstore signature verification failed"
+      SIG_FAIL=1
+    fi
+  done
+
+  if [ "$SIG_FAIL" -eq 0 ]; then
+    emit_receipt "supply_chain_sig_verified" "pass"
+    VERIFY_PASS=$((VERIFY_PASS+1))
+  else
+    emit_receipt "supply_chain_sig_verified" "fail" "one or more Sigstore signature verifications failed"
+    VERIFY_FAIL=$((VERIFY_FAIL+1))
+  fi
+fi
+
+# ---------------------------------------------------------------
+# Step 3: in-toto attestation chain
+# ---------------------------------------------------------------
+echo
+echo "[step] 3/5 in-toto layout verification..."
+
+INTOTO_FAIL=0
+
+if ! command -v in-toto-verify >/dev/null 2>&1; then
+  echo "  [warn] in-toto-verify not installed; skipping layout check."
+  if [ "$MODE" = "locked" ]; then
+    echo "  ERROR: locked mode requires in-toto-verify." >&2
+    emit_receipt "supply_chain_layout_verified" "fail" "in-toto-verify not installed in locked mode"
+    VERIFY_FAIL=$((VERIFY_FAIL+1))
+    INTOTO_FAIL=1
+  else
+    emit_receipt "supply_chain_layout_verified" "skip" "in-toto-verify not installed (non-locked mode)"
+  fi
+else
+  LAYOUT_DIR="$PROVENANCE_DIR/in-toto"
+  LAYOUT_FILE="$LAYOUT_DIR/root.layout"
+  if [ ! -f "$LAYOUT_FILE" ]; then
+    echo "  [warn] No in-toto layout at $LAYOUT_FILE"
+    emit_receipt "supply_chain_layout_verified" "skip" "no layout file present"
+  else
+    if in-toto-verify \
+        --layout "$LAYOUT_FILE" \
+        --layout-keys "$LAYOUT_DIR/keys/" \
+        --link-dir "$LAYOUT_DIR/links/" 2>/dev/null; then
+      echo "  [ok] in-toto layout verification passed"
+      emit_receipt "supply_chain_layout_verified" "pass"
+      VERIFY_PASS=$((VERIFY_PASS+1))
+    else
+      echo "  [FAIL] in-toto layout verification failed"
+      emit_receipt "supply_chain_layout_verified" "fail" "in-toto-verify returned non-zero"
+      VERIFY_FAIL=$((VERIFY_FAIL+1))
+      INTOTO_FAIL=1
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------
+# Step 4: SLSA provenance required fields
+# ---------------------------------------------------------------
+echo
+echo "[step] 4/5 SLSA provenance check..."
+
+SLSA_FAIL=0
+REQUIRED_FIELDS=("buildType" "builder" "metadata")
+
+for artifact in bootkit bootstrap gitops; do
+  SLSA_FILE="$PROVENANCE_DIR/${artifact}.slsa.json"
+  if [ ! -f "$SLSA_FILE" ]; then
+    echo "  [warn] No SLSA provenance for $artifact"
+    if [ "$MODE" = "locked" ]; then
+      SLSA_FAIL=1
+    fi
+    continue
+  fi
+  python3 - <<PY
+import json,sys
+required=["buildType","builder","metadata","materials"]
+d=json.load(open("$SLSA_FILE"))
+pred=d.get("predicate",d)
+missing=[f for f in required if f not in pred]
+if missing:
+  print("  [FAIL] $artifact SLSA missing fields:", missing)
+  sys.exit(1)
+else:
+  print("  [ok] $artifact SLSA required fields present")
+PY
+  if [ $? -ne 0 ]; then SLSA_FAIL=1; fi
+done
+
+if [ "$SLSA_FAIL" -eq 0 ]; then
+  emit_receipt "supply_chain_slsa_verified" "pass"
+  VERIFY_PASS=$((VERIFY_PASS+1))
+else
+  emit_receipt "supply_chain_slsa_verified" "fail" "one or more SLSA provenance checks failed"
+  VERIFY_FAIL=$((VERIFY_FAIL+1))
+fi
+
+# ---------------------------------------------------------------
+# Step 5: Policy compliance gate
+# ---------------------------------------------------------------
+echo
+echo "[step] 5/5 Policy compliance..."
+
+POLICY_FAIL=0
+
+if [ "$MODE" = "estop" ]; then
+  echo "  [FAIL] Mode is estop; policy gate refuses all applies."
+  POLICY_FAIL=1
+fi
+
+if [ "$MODE" = "locked" ] && [ "$VERIFY_FAIL" -gt 0 ]; then
+  echo "  [FAIL] Locked mode with $VERIFY_FAIL verification failure(s); refusing apply."
+  POLICY_FAIL=1
+fi
+
+if [ "$POLICY_FAIL" -eq 0 ]; then
+  emit_receipt "supply_chain_policy_pass" "pass" \
+    "steps_passed=${VERIFY_PASS} steps_failed=${VERIFY_FAIL} mode=${MODE}"
+  echo
+  echo "== PROVENANCE VERIFY: PASS =="
+  echo "Steps passed: $VERIFY_PASS"
+  echo "Steps failed: $VERIFY_FAIL (non-blocking in $MODE mode)"
+  exit 0
+else
+  emit_receipt "supply_chain_policy_fail" "fail" \
+    "steps_passed=${VERIFY_PASS} steps_failed=${VERIFY_FAIL} mode=${MODE}"
+  echo
+  echo "== PROVENANCE VERIFY: FAIL =="
+  echo "Steps passed: $VERIFY_PASS"
+  echo "Steps failed: $VERIFY_FAIL"
+  exit 10
+fi

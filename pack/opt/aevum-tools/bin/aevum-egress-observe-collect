@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+import argparse, hashlib, json, os, re, subprocess, time, sys
+from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
+
+PREFIX = "AEVUM_EGRESS_OBS "
+
+def sha256_file(p: Path) -> str:
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024*1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def run(cmd):
+    return subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+def extract_ips(lines):
+    # kernel log lines usually contain SRC=... DST=... DPT=...
+    ip4 = Counter()
+    ip6 = Counter()
+    for ln in lines:
+        if PREFIX not in ln:
+            continue
+        # Try common forms: DST=1.2.3.4 or DST=2001:...
+        m = re.search(r"\bDST=([0-9a-fA-F\.:]+)\b", ln)
+        if not m:
+            continue
+        dst = m.group(1).strip()
+        if ":" in dst:
+            ip6[dst.lower()] += 1
+        else:
+            ip4[dst] += 1
+    return ip4, ip6
+
+def main():
+    ap = argparse.ArgumentParser(description="Collect bounded egress observe logs and emit an artifact + receipt.")
+    ap.add_argument("--instance", default="workstation", help="Instance name (default: workstation)")
+    ap.add_argument("--base-root", default="/var/lib/aevum", help="Aevum base root (default: /var/lib/aevum)")
+    ap.add_argument("--since-epoch", type=int, default=0, help="Override cursor: collect since epoch (UTC seconds)")
+    ap.add_argument("--limit", type=int, default=50000, help="Max journal lines to scan (default: 50000)")
+    args = ap.parse_args()
+
+    # Root required for system paths and journald access
+    if os.geteuid() != 0 and str(args.base_root).startswith("/var/lib/"):
+        print("Run as root.", file=sys.stderr)
+        return 2
+
+    base = Path(args.base_root) / args.instance
+    outdir = base / "egress_observe"
+    outdir.mkdir(parents=True, exist_ok=True)
+    cursor = outdir / "cursor_epoch"
+
+    last = 0
+    if args.since_epoch:
+        last = args.since_epoch
+    elif cursor.exists():
+        try:
+            last = int(cursor.read_text().strip() or "0")
+        except Exception:
+            last = 0
+
+    now = int(time.time())
+    cursor.write_text(str(now))
+
+    since_arg = f"@{last}" if last > 0 else "1970-01-01"
+    # journalctl -k is kernel; --no-pager for script.
+    cmd = ["journalctl", "-k", "--since", since_arg, "--no-pager", "-n", str(args.limit)]
+    r = run(cmd)
+    lines = (r.stdout or "").splitlines()
+
+    ip4, ip6 = extract_ips(lines)
+    if len(ip4) == 0 and len(ip6) == 0:
+        # Nothing observed; update cursor and exit quietly (non-gating).
+        print("OK: no observed egress entries")
+        return 0
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    art = outdir / f"observed_{ts}.json"
+
+    data = {
+        "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "since_epoch": last,
+        "until_epoch": now,
+        "prefix": PREFIX,
+        "counts": {
+            "v4_total": sum(ip4.values()),
+            "v6_total": sum(ip6.values()),
+            "v4_unique": len(ip4),
+            "v6_unique": len(ip6),
+        },
+        "top_v4": ip4.most_common(200),
+        "top_v6": ip6.most_common(200),
+    }
+    art.write_text(json.dumps(data, indent=2, sort_keys=True))
+    digest = sha256_file(art)
+
+    # Emit receipt (non-gating)
+    receipt = Path("/opt/aevum-tools/bin/aevum-receipt")
+    if receipt.exists():
+        top4 = " ".join([f"{ip}:{c}" for ip,c in ip4.most_common(10)])
+        top6 = " ".join([f"{ip}:{c}" for ip,c in ip6.most_common(10)])
+        subprocess.run([str(receipt), "note", "egress observe collected",
+                        f"component=egress_observe", f"instance={args.instance}",
+                        f"file={str(art)}", f"manifest=sha256:{digest}",
+                        f"v4_unique={len(ip4)}", f"v6_unique={len(ip6)}",
+                        f"top4={top4}", f"top6={top6}"],
+                       check=False)
+
+    print(f"OK: {art} sha256:{digest}")
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())

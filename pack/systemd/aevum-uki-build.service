@@ -1,0 +1,15 @@
+[Unit]
+Description=Aevum UKI Build (optional)
+ConditionPathExists=/var/lib/aevum/workstation/identity/device_ed25519_sk.pem
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env python3 /usr/local/sbin/aevum_uki_build.py --unsigned
+User=root
+Group=root
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/aevum /boot /boot/efi /etc/aevum

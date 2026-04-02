@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "error": {
+      "type": "string"
+    },
+    "receipt_event_hash": {
+      "type": "string"
+    },
+    "receipt_path": {
+      "type": "string"
+    },
+    "req_id": {
+      "minLength": 10,
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "minted",
+        "failed"
+      ]
+    },
+    "timechain_hint": {
+      "type": "string"
+    },
+    "workstation_sig": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "status",
+    "req_id",
+    "workstation_sig"
+  ],
+  "title": "Aevum ReceiptResult",
+  "type": "object"
+}

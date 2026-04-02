@@ -1,0 +1,15 @@
+{
+  "bank": "sha256",
+  "mode": "observe",
+  "notes": "Use when Secure Boot uses MOK enrollment for NVIDIA modules; observe-only. PCRs 0,2,7 on sha256.",
+  "pcrs": [
+    0,
+    2,
+    7
+  ],
+  "profile_name": "nvidia_mok_observe",
+  "purpose": "boot_integrity_evidence_and_commit",
+  "quote_qualifying_data_prefix": "aevum",
+  "schema": "AEVUM:TPM:PCR_POLICY:V1",
+  "version": "1.0.0"
+}

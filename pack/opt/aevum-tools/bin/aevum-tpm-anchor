@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# AEVUM_FIX_PY_HEREDOC_TERMINATORS_V1
+set -euo pipefail
+# aevum-tpm-anchor (v0.3)
+# Produce a TPM-signed "boot anchor" artifact:
+# - Binds to bootstrap manifest hash + latest PCR snapshot + measured boot eventlog hash (best-effort)
+# - Includes a TPM quote (AK) over selected PCRs (best-effort)
+# - Signs the canonical anchor digest with the TPM signing key (TPMT_SIGNATURE)
+# - Writes a stable pointer for TimeChain: <base>/<instance>/accurate/state/CURRENT_BOOT_ANCHOR.json
+#
+# Non-gating: if TPM is absent/unavailable, it exits 0 without breaking the machine.
+
+BASE="/var/lib/aevum"
+INSTANCE="workstation"
+HANDLE=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base) BASE="$2"; shift 2;;
+    --instance) INSTANCE="$2"; shift 2;;
+    --handle) HANDLE="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+
+[[ "$(id -u)" -eq 0 ]] || { echo "Run as root." >&2; exit 2; }
+
+TPMDIR="${BASE}/${INSTANCE}/tpm_sign"
+HANDLE_FILE="${TPMDIR}/sign.handle"
+PUB_PEM="${TPMDIR}/sign.pub.pem"
+
+if [[ -z "${HANDLE}" ]]; then
+  [[ -f "${HANDLE_FILE}" ]] && HANDLE="$(cat "${HANDLE_FILE}")" || true
+fi
+
+if [[ -z "${HANDLE}" ]]; then
+  echo "INFO: TPM signing handle not found; skipping anchor."
+  exit 0
+fi
+
+command -v tpm2_sign >/dev/null 2>&1 || { echo "INFO: tpm2-tools missing; skipping anchor."; exit 0; }
+
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+outdir="${TPMDIR}/anchors"
+mkdir -p "${outdir}"
+chmod 0700 "${outdir}"
+
+bootstrap_hash=""
+TPM_POLICY_REF="${BASE}/${INSTANCE}/accurate/state/CURRENT_TPM_PCR_POLICY.json"
+TPM_POLICY_SHA=""
+TPM_POLICY_ETC="/etc/aevum/registry/tpm_pcr_policy.json"
+[[ -f /etc/aevum/bootstrap_manifest.sha256 ]] && bootstrap_hash="$(tr -d ' \n\r' < /etc/aevum/bootstrap_manifest.sha256)"
+# TPM PCR policy hash (best-effort)
+if [[ -f "${TPM_POLICY_REF}" ]]; then TPM_POLICY_SHA="$(sha256sum "${TPM_POLICY_REF}" | awk '{print $1}')"; elif [[ -f "${TPM_POLICY_ETC}" ]]; then TPM_POLICY_SHA="$(sha256sum "${TPM_POLICY_ETC}" | awk '{print $1}')"; fi
+
+# Latest PCR snapshot/map (best-effort)
+bootdir="${BASE}/${INSTANCE}/boot"
+pcr_file=""
+pcr_hash=""
+if [[ -d "${bootdir}" ]]; then
+  pcr_file="$(ls -1 "${bootdir}"/pcrmap_*.json 2>/dev/null | sort | tail -n 1 || true)"
+  if [[ -z "${pcr_file}" ]]; then
+    pcr_file="$(ls -1 "${bootdir}"/pcr_*.json 2>/dev/null | sort | tail -n 1 || true)"
+  fi
+  if [[ -n "${pcr_file}" && -f "${pcr_file}" ]]; then
+    pcr_hash="$(sha256sum "${pcr_file}" | awk '{print $1}')"
+  fi
+fi
+
+# Measured boot eventlog capture (best-effort)
+eventlog_manifest=""
+eventlog_file=""
+eventlog_hash=""
+if [[ -x /opt/aevum-tools/bin/aevum-tpm-eventlog-capture ]]; then
+  eventlog_manifest="$(/opt/aevum-tools/bin/aevum-tpm-eventlog-capture --instance "${INSTANCE}" 2>/dev/null | tail -n 1 || true)"
+  if [[ -n "${eventlog_manifest}" && -f "${eventlog_manifest}" ]]; then
+    eventlog_file="$(python3 - ${eventlog_manifest} <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+entries=o.get("entries",[])
+# prefer BIOS binary measurements if present, else first entry
+pref=[e for e in entries if e.get("kind","")=="binary_bios_measurements"]
+e=(pref[0] if pref else (entries[0] if entries else {}))
+print(e.get("dest",""))
+PY
+ )"
+    if [[ -n "${eventlog_file}" && -f "${eventlog_file}" ]]; then
+      eventlog_hash="$(sha256sum "${eventlog_file}" | awk '{print $1}')"
+    fi
+  fi
+fi
+
+# Device and TPM public key hashes (best-effort)
+dev_pk="${BASE}/${INSTANCE}/identity/device_ed25519_pk.pem"
+dev_pk_hash=""
+[[ -f "${dev_pk}" ]] && dev_pk_hash="$(sha256sum "${dev_pk}" | awk '{print $1}')"
+
+tpm_pub_hash=""
+[[ -f "${PUB_PEM}" ]] && tpm_pub_hash="$(sha256sum "${PUB_PEM}" | awk '{print $1}')"
+
+# TPM quote (AK) (best-effort)
+quote_json=""
+quote_json_hash=""
+quote_pcr_values_json="{}"
+quote_msg_b64=""
+quote_sig_b64=""
+quote_pcr_b64=""
+ak_pub_pem_path="${TPMDIR}/ak.pub.pem"
+
+if [[ -x /opt/aevum-tools/bin/aevum-tpm-quote ]]; then
+  /opt/aevum-tools/bin/aevum-tpm-quote --instance "${INSTANCE}" >/dev/null 2>&1 || true
+  quote_json="$(ls -1 "${TPMDIR}/quotes"/quote_*.json 2>/dev/null | sort | tail -n 1 || true)"
+fi
+
+if [[ -n "${quote_json}" && -f "${quote_json}" ]]; then
+  quote_json_hash="$(sha256sum "${quote_json}" | awk '{print $1}')"
+  quote_pcr_values_json="$(python3 - ${quote_json} <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+import json as js
+print(js.dumps(o.get('pcr_values',{}), sort_keys=True))
+PY
+ )"
+  quote_msg_b64="$(python3 - ${quote_json} <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("quote_msg_b64",""))
+PY
+ )"
+  quote_sig_b64="$(python3 - ${quote_json} <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("quote_sig_b64",""))
+PY
+ )"
+  quote_pcr_b64="$(python3 - ${quote_json} <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("quote_pcr_b64",""))
+PY
+ )"
+fi
+
+export INSTANCE BOOTSTRAP_HASH="${bootstrap_hash}" TPM_POLICY_REF="${TPM_POLICY_REF}" TPM_POLICY_SHA="${TPM_POLICY_SHA}" PCR_FILE="${pcr_file}" PCR_HASH="${pcr_hash}" DEVPK_HASH="${dev_pk_hash}" TPMPUB_HASH="${tpm_pub_hash}" HANDLE
+export EVENTLOG_MANIFEST="${eventlog_manifest}" EVENTLOG_FILE="${eventlog_file}" EVENTLOG_HASH="${eventlog_hash}"
+export QUOTE_JSON="${quote_json}" QUOTE_JSON_HASH="${quote_json_hash}" QUOTE_PCR_VALUES_JSON="${quote_pcr_values_json}"
+export QUOTE_MSG_B64="${quote_msg_b64}" QUOTE_SIG_B64="${quote_sig_b64}" QUOTE_PCR_B64="${quote_pcr_b64}" AK_PUB_PEM_PATH="${ak_pub_pem_path}"
+
+canon="$(mktemp)"
+export PUB_PEM="${PUB_PEM}"
+export PUB_BIN="${PUB_BIN}"
+python3 - <<'PY' > "${canon}"
+import json, os, datetime, platform
+obj = {
+  "type": "aevum_tpm_anchor_v1",
+  "timestamp_utc": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+  "hostname": platform.node(),
+  "instance": os.environ.get("INSTANCE",""),
+  "bootstrap_manifest_sha256": os.environ.get("BOOTSTRAP_HASH",""),
+  "tpm_pcr_policy_ref": os.environ.get("TPM_POLICY_REF",""),
+  "tpm_pcr_policy_sha256": ("sha256:"+os.environ.get("TPM_POLICY_SHA","")) if os.environ.get("TPM_POLICY_SHA","") else "",
+  "pcr_snapshot_file": os.environ.get("PCR_FILE",""),
+  "pcr_snapshot_sha256": os.environ.get("PCR_HASH",""),
+  "device_public_key_sha256": os.environ.get("DEVPK_HASH",""),
+  "tpm_sign_public_key_sha256": os.environ.get("TPMPUB_HASH",""),
+  "tpm_sign_public_key_pem_path": os.environ.get("PUB_PEM",""),
+  "tpm_sign_public_key_path": os.environ.get("PUB_BIN",""),
+  "tpm_sign_handle": os.environ.get("HANDLE",""),
+  "eventlog_manifest_path": os.environ.get("EVENTLOG_MANIFEST",""),
+  "eventlog_file": os.environ.get("EVENTLOG_FILE",""),
+  "eventlog_sha256": os.environ.get("EVENTLOG_HASH",""),
+  "quote_json_path": os.environ.get("QUOTE_JSON",""),
+  "quote_json_sha256": os.environ.get("QUOTE_JSON_HASH",""),
+  "quote_pcr_values": json.loads(os.environ.get("QUOTE_PCR_VALUES_JSON","{}") or "{}"),
+  "tpm_quote": {
+    "quote_msg_b64": os.environ.get("QUOTE_MSG_B64",""),
+    "quote_sig_b64": os.environ.get("QUOTE_SIG_B64",""),
+    "quote_pcr_b64": os.environ.get("QUOTE_PCR_B64",""),
+  },
+  "ak_pub_pem_path": os.environ.get("AK_PUB_PEM_PATH",""),
+}
+print(json.dumps(obj, sort_keys=True, separators=(",",":")))
+PY
+
+digest_hex="$(python3 - ${canon} <<'PY'
+import hashlib,sys
+b=open(sys.argv[1],'rb').read()
+print(hashlib.sha256(b).hexdigest())
+PY
+ )"
+
+digbin="$(mktemp)"
+python3 - ${digest_hex} <<'PY' > "${digbin}"
+import binascii,sys
+sys.stdout.buffer.write(binascii.unhexlify(sys.argv[1]))
+PY
+
+sigbin="$(mktemp)"
+tpm2_sign -c "${HANDLE}" -g sha256 -f plain -d "${digbin}" -o "${sigbin}" >/dev/null 2>&1 || {
+  echo "WARN: tpm2_sign failed; skipping anchor."
+  rm -f "${canon}" "${digbin}" "${sigbin}" || true
+  exit 0
+}
+
+sig_b64="$(python3 - ${sigbin} <<'PY'
+import base64,sys
+print(base64.b64encode(open(sys.argv[1],'rb').read()).decode('ascii'))
+PY
+ )"
+
+out="${outdir}/anchor_${ts}.json"
+export SIG_B64="${sig_b64}"
+export DIGEST_HEX="${digest_hex}"
+python3 - ${canon} <<'PY' > "${out}"
+import json,sys,os
+canon=open(sys.argv[1],'r',encoding='utf-8').read()
+obj=json.loads(canon)
+obj["anchor_digest_sha256"]="sha256:" + os.environ.get("DIGEST_HEX","")
+obj["signature_b64"]=os.environ.get("SIG_B64","")
+obj["signature_format"]="plain_r_s_64(base64)"
+obj["anchor_signature"]={
+  "sig_b64": os.environ.get("SIG_B64",""),
+  "sig_fmt": "plain_r_s_64(base64)",
+  "hash_alg": "sha256",
+  "signed_over": "sha256(canonical_json_without_signature_fields)",
+}
+print(json.dumps(obj, indent=2, sort_keys=True))
+PY
+
+chmod 0600 "${out}" || true
+h="$(sha256sum "${out}" | awk '{print $1}')"
+
+# Stable pointer for TimeChain anchoring (Seam layout)
+state_dir="${BASE}/${INSTANCE}/accurate/state"
+mkdir -p "${state_dir}"
+chmod 0700 "${state_dir}" || true
+cp -f "${out}" "${state_dir}/CURRENT_BOOT_ANCHOR.json" 2>/dev/null || true
+ln -sfn "${out}" "${outdir}/current.json" 2>/dev/null || true
+
+rm -f "${canon}" "${digbin}" "${sigbin}" || true
+
+if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+  /opt/aevum-tools/bin/aevum-receipt note "tpm boot anchor" component=tpm instance="${INSTANCE}" file="${out}" manifest="sha256:${h}" handle="${HANDLE}" quote_sha256="${quote_json_hash}" eventlog_sha256="${eventlog_hash}" || true
+fi
+
+echo "OK: ${out} sha256:${h}"

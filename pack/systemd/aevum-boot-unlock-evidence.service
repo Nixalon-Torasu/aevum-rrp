@@ -1,0 +1,32 @@
+[Unit]
+Description=Aevum Boot Unlock Evidence (proof-grade LUKS/TPM outcome)
+ConditionPathExists=/var/lib/aevum/workstation/identity/device_ed25519_sk.pem
+After=cryptsetup.target local-fs.target
+Wants=cryptsetup.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/aevum_boot_unlock_evidence.py
+User=root
+Group=root
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+ReadWritePaths=/var/lib/aevum /var/log /run /etc/aevum
+
+# Non-gating: evidence collection must never block boot.
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target

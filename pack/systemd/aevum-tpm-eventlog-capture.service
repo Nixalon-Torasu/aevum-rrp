@@ -1,0 +1,8 @@
+[Unit]
+Description=Aevum TPM Eventlog Capture (Measured Boot Log)
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/aevum-tools/bin/aevum-tpm-eventlog-capture --instance workstation

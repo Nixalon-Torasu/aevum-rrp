@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# aevum-podman-run: opinionated secure defaults for podman run.
+# This does not block you from doing unsafe things; it makes safe the default.
+#
+# Defaults:
+# - no-new-privileges
+# - drop all caps
+# - read-only rootfs (opt-out with --rw)
+# - tmpfs /tmp
+# - userns keep-id if rootless; root still allowed but discouraged
+#
+# Usage:
+#   aevum-podman-run IMAGE [cmd...]
+#   aevum-podman-run --rw IMAGE ...
+#
+RW=0
+if [[ "${1:-}" == "--rw" ]]; then
+  RW=1; shift
+fi
+[[ $# -ge 1 ]] || { echo "usage: aevum-podman-run [--rw] IMAGE [cmd...]"; exit 2; }
+
+IMAGE="$1"; shift || true
+
+FLAGS=(--security-opt no-new-privileges --cap-drop=ALL --pids-limit=512 --read-only --tmpfs /tmp:rw,size=256m,noexec,nosuid,nodev)
+if [[ "${RW}" == "1" ]]; then
+  # remove --read-only
+  FLAGS=("${FLAGS[@]/--read-only}")
+fi
+
+exec podman run "${FLAGS[@]}" "$IMAGE" "$@"

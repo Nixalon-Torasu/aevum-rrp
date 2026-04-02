@@ -1,0 +1,32 @@
+
+# aevum_privileged.rules
+# Bounded privileged actions (in addition to execve root-only).
+# Tag: aevum_privileged
+# NOTE: auditd rules are sensitive; keep this minimal.
+
+-D
+-b 8192
+-f 1
+
+# Always log execve by root (primary evidence)
+-a always,exit -F arch=b64 -S execve,execveat -F euid=0 -k aevum_root_exec
+-a always,exit -F arch=b32 -S execve,execveat -F euid=0 -k aevum_root_exec
+
+# Identity and privilege transitions
+-w /etc/passwd -p wa -k aevum_id_db
+-w /etc/shadow -p wa -k aevum_id_db
+-w /etc/group  -p wa -k aevum_id_db
+-w /etc/sudoers -p wa -k aevum_sudoers
+-w /etc/sudoers.d -p wa -k aevum_sudoers
+
+# Kernel module insertion/removal (defense-in-depth; module harvest also exists)
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k aevum_modules
+-a always,exit -F arch=b32 -S init_module,finit_module,delete_module -k aevum_modules
+
+# Time changes
+-a always,exit -F arch=b64 -S adjtimex,settimeofday,clock_settime -k aevum_time
+-a always,exit -F arch=b32 -S adjtimex,settimeofday,clock_settime -k aevum_time
+
+# Network configuration changes (very bounded)
+-a always,exit -F arch=b64 -S sethostname,setdomainname -k aevum_netcfg
+-a always,exit -F arch=b32 -S sethostname,setdomainname -k aevum_netcfg

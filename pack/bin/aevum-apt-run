@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# aevum-apt-run: run apt inside a bounded egress window + capture supply-chain artifacts.
+# Usage: sudo aevum-apt-run update
+#        sudo aevum-apt-run install <pkgs...>
+# Non-gating: if firewallctl missing, runs apt directly.
+
+BASE="/var/lib/aevum"
+INSTANCE="workstation"
+WINDOW="${AEVUM_APT_EGRESS_WINDOW:-600}"
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "Run as root." >&2
+  exit 2
+fi
+
+cmd="${1:-}"
+shift || true
+
+run_apt() {
+  case "${cmd}" in
+    update) apt-get update ;;
+    install) apt-get install -y "$@" ;;
+    upgrade) apt-get upgrade -y ;;
+    full-upgrade) apt-get full-upgrade -y ;;
+    *) echo "usage: aevum-apt-run update|install|upgrade|full-upgrade [args]" >&2; exit 2 ;;
+  esac
+}
+
+# Prefer egress profile "apt" if supported
+if [[ -x /opt/aevum-tools/bin/aevum-firewallctl ]]; then
+  if /opt/aevum-tools/bin/aevum-firewallctl --help 2>/dev/null | grep -q "egress-profile"; then
+    /opt/aevum-tools/bin/aevum-firewallctl egress-profile apt "${WINDOW}" -- bash -lc "$(declare -f run_apt); run_apt \"$@\""
+  else
+    /opt/aevum-tools/bin/aevum-firewallctl egress-run "${WINDOW}" -- bash -lc "$(declare -f run_apt); run_apt \"$@\""
+  fi
+else
+  run_apt "$@"
+fi
+
+# Capture after changes
+if [[ -x /usr/local/sbin/aevum_apt_capture.py ]]; then
+  /usr/local/sbin/aevum_apt_capture.py --base "${BASE}" --instance "${INSTANCE}" >/dev/null 2>&1 || true
+fi

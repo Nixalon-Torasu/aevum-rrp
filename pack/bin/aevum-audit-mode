@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# aevum-audit-mode: switch audit rules between root_only and all_exec
+# Usage: sudo aevum-audit-mode set root_only|privileged|all_exec
+# Non-gating: prints status and exits 0 on unknown mode (no changes)
+
+cmd="${1:-}"
+mode="${2:-}"
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "Run as root." >&2
+  exit 2
+fi
+
+rules_dir="/etc/audit/rules.d"
+src_dir="/etc/audit/rules.d"
+# bootstrap stores templates in /etc/audit/rules.d? installer copies from pack to /etc/audit/rules.d.
+# We also accept templates in /etc/audit/rules.d with names aevum_root.rules / aevum_all.rules.
+root_t="${rules_dir}/aevum_root.rules"
+all_t="${rules_dir}/aevum_all.rules"
+priv_t="${rules_dir}/aevum_privileged.rules"
+target="${rules_dir}/aevum.rules"
+
+status() {
+  echo "auditd: $(systemctl is-active auditd 2>/dev/null || true)"
+  if [[ -f "${target}" ]]; then
+    echo "active_rules_sha256: $(sha256sum "${target}" | awk '{print $1}')"
+    if grep -q "aevum_all_exec" "${target}" 2>/dev/null; then
+      echo "mode: all_exec"
+    elif grep -q "aevum_privileged" "${target}" 2>/dev/null; then
+      echo "mode: privileged"
+    else
+      echo "mode: root_only"
+    fi
+  else
+    echo "mode: unknown (no ${target})"
+  fi
+}
+
+case "${cmd}" in
+  status|"")
+    status
+    exit 0
+    ;;
+  set)
+    case "${mode}" in
+      root_only)
+        [[ -f "${root_t}" ]] || { echo "missing ${root_t}" >&2; exit 2; }
+        install -m 0640 "${root_t}" "${target}"
+        ;;
+      all_exec)
+        [[ -f "${all_t}" ]] || { echo "missing ${all_t}" >&2; exit 2; }
+        install -m 0640 "${all_t}" "${target}"
+        ;;
+      privileged)
+        [[ -f "${priv_t}" ]] || { echo "missing ${priv_t}" >&2; exit 2; }
+        install -m 0640 "${priv_t}" "${target}"
+        ;;
+      *)
+        echo "unknown mode: ${mode}" >&2
+        status
+        exit 0
+        ;;
+    esac
+    augenrules --load >/dev/null 2>&1 || true
+    systemctl restart auditd.service >/dev/null 2>&1 || true
+    status
+    exit 0
+    ;;
+  *)
+    echo "usage: aevum-audit-mode [status] | set root_only|privileged|all_exec" >&2
+    exit 2
+    ;;
+esac

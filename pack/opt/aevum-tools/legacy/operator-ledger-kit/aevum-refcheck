@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WITH_RECEIPT="0"
+case "${1:-}" in
+  --receipt) WITH_RECEIPT="1"; shift || true ;;
+  -h|--help)
+    cat <<'USAGE'
+Usage:
+  aevum-refcheck
+  aevum-refcheck --receipt
+
+Checks reference placement for Aevum workstation integrity kit.
+With --receipt, also mints a signed PASS/FAIL receipt that binds BOTH repo HEADs:
+  - ${AEVUM_STACK_DIR:-/opt/aevum-controlplane} HEAD
+  - /opt/aevum-tools HEAD
+USAGE
+    exit 0
+    ;;
+esac
+
+SUDO=""
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then SUDO="sudo"; fi
+
+HOST="$(hostname)"
+UTC_NOW="$(date -u -Is)"
+
+AI_STACK_DIR="${AEVUM_STACK_DIR:-/opt/aevum-controlplane}"
+TOOLS_DIR="/opt/aevum-tools"
+
+A_ROOT="/var/lib/aevum"
+GIT_DIR="/var/lib/aevum/git"
+LEDGER_DIR="/var/lib/aevum/ledger"
+BLOCKS_DIR="$LEDGER_DIR/blocks"
+RECEIPTS_DIR="$LEDGER_DIR/receipts"
+CHAIN_LOG="$LEDGER_DIR/chain.log"
+
+NFT_CONF="/etc/nftables.conf"
+NFT_INGRESS="/etc/nftables.d/aevum-ingress.nft"
+INGRESS_CONF="/etc/aevum/ingressctl.conf"
+
+SIGN_KEY="$HOME/.ssh/aevum_ledger_ed25519"
+SIGN_PUB="$HOME/.ssh/aevum_ledger_ed25519.pub"
+ALLOWED_SIGNERS="$HOME/.config/aevum-ledger/allowed_signers"
+
+# tools we care about
+TOOL_INGRESSCTL="/usr/local/sbin/aevum-ingressctl"
+TOOL_RECEIPTCTL="/usr/local/bin/aevum-receiptctl"
+TOOL_FINALIZE="/usr/local/bin/aevum-ledger-finalize"
+TOOL_RECEIPT="/usr/local/bin/aevum-receipt"
+TOOL_REFCHECK="$(command -v aevum-refcheck 2>/dev/null || true)"
+
+FAIL=0
+ok(){  printf "OK   - %s\n" "$*"; }
+bad(){ printf "FAIL - %s\n" "$*" >&2; FAIL=1; }
+
+need_dir(){  [[ -d "$1" ]] && ok "dir exists: $1" || bad "dir missing: $1"; }
+need_file(){ [[ -f "$1" ]] && ok "file exists: $1" || bad "file missing: $1"; }
+need_exec(){ [[ -x "$1" ]] && ok "exec exists: $1" || bad "exec missing/not executable: $1"; }
+
+sha(){
+  if [[ -f "$1" ]]; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    echo ""
+  fi
+}
+
+echo "=== Aevum reference placement check ==="
+echo "Host: $HOST  UTC: $UTC_NOW"
+echo
+
+# Core dirs
+need_dir "$AI_STACK_DIR"
+need_dir "$TOOLS_DIR"
+need_dir "$A_ROOT"
+need_dir "$GIT_DIR"
+need_dir "$LEDGER_DIR"
+need_dir "$BLOCKS_DIR"
+need_dir "$RECEIPTS_DIR"
+
+# Expected key files
+need_file "$AI_STACK_DIR/docker-compose.yml"
+need_file "$AI_STACK_DIR/.gitignore"
+
+# Bare origins (best-effort)
+need_dir "$GIT_DIR/ai-stack.git"
+if [[ -d "$GIT_DIR/ai-stack.git" ]]; then
+  git --git-dir "$GIT_DIR/ai-stack.git" rev-parse --is-bare-repository >/dev/null 2>&1 \
+    && ok "bare repo readable: $GIT_DIR/ai-stack.git" \
+    || bad "bare repo not readable: $GIT_DIR/ai-stack.git"
+fi
+
+if [[ -d "$GIT_DIR/aevum-tools.git" ]]; then
+  git --git-dir "$GIT_DIR/aevum-tools.git" rev-parse --is-bare-repository >/dev/null 2>&1 \
+    && ok "bare repo readable: $GIT_DIR/aevum-tools.git" \
+    || bad "bare repo not readable: $GIT_DIR/aevum-tools.git"
+else
+  ok "bare repo: (aevum-tools.git not present — optional)"
+fi
+
+# Worktrees valid?
+if git -C "$AI_STACK_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  ok "git worktree valid: $AI_STACK_DIR"
+else
+  bad "git worktree invalid: $AI_STACK_DIR"
+fi
+
+if git -C "$TOOLS_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  ok "git worktree valid: $TOOLS_DIR"
+else
+  bad "git worktree invalid: $TOOLS_DIR"
+fi
+
+AI_ORIGIN="$(git -C "$AI_STACK_DIR" remote get-url origin 2>/dev/null || true)"
+TOOLS_ORIGIN="$(git -C "$TOOLS_DIR" remote get-url origin 2>/dev/null || true)"
+
+if [[ -n "$AI_ORIGIN" ]]; then ok "ai-stack origin remote: $AI_ORIGIN"; else bad "ai-stack origin remote missing"; fi
+if [[ -n "$TOOLS_ORIGIN" ]]; then ok "aevum-tools origin remote: $TOOLS_ORIGIN"; else bad "aevum-tools origin remote missing"; fi
+
+echo
+echo "=== Tools ==="
+need_exec "$TOOL_INGRESSCTL"
+need_exec "$TOOL_RECEIPTCTL"
+need_exec "$TOOL_FINALIZE"
+need_exec "$TOOL_RECEIPT"
+if [[ -n "${TOOL_REFCHECK:-}" ]]; then
+  need_exec "$TOOL_REFCHECK"
+else
+  bad "aevum-refcheck not found in PATH"
+fi
+
+echo
+echo "=== System config ==="
+need_file "$NFT_CONF"
+need_file "$NFT_INGRESS"
+need_file "$INGRESS_CONF"
+
+echo
+echo "=== Signing material ==="
+need_file "$SIGN_KEY"
+need_file "$SIGN_PUB"
+need_file "$ALLOWED_SIGNERS"
+
+echo
+echo "=== Ledger files ==="
+need_file "$CHAIN_LOG"
+if [[ -f "$CHAIN_LOG" ]]; then
+  ls -l "$CHAIN_LOG" || true
+  lsattr "$CHAIN_LOG" 2>/dev/null || true
+fi
+
+echo
+echo "=== Services ==="
+systemctl is-active --quiet nftables && ok "nftables active" || bad "nftables NOT active"
+systemctl is-active --quiet ssh && ok "ssh active" || bad "ssh NOT active"
+
+echo
+echo "=== nft aevum_ingress ==="
+if $SUDO nft list table inet aevum_ingress >/dev/null 2>&1; then
+  ok "table exists: inet aevum_ingress"
+  DUPS="$(
+    $SUDO nft -a list chain inet aevum_ingress input 2>/dev/null \
+      | sed -n '/^\s\+/p' \
+      | sed 's/\s\+# handle .*//g' \
+      | sort | uniq -d || true
+  )"
+  if [[ -n "$DUPS" ]]; then
+    bad "duplicate rules detected in aevum_ingress input"
+    echo "$DUPS" | sed 's/^/  DUP: /'
+  else
+    ok "no duplicate rules detected in aevum_ingress input"
+  fi
+else
+  bad "table missing: inet aevum_ingress"
+fi
+
+# Compute BOTH repo heads (this is what the push gate needs)
+AI_HEAD="$(git -C "$AI_STACK_DIR" rev-parse HEAD 2>/dev/null || true)"
+TOOLS_HEAD="$(git -C "$TOOLS_DIR" rev-parse HEAD 2>/dev/null || true)"
+
+echo
+echo "=== Hashes (reference fingerprints) ==="
+printf "%s  %s\n" "$(sha "$TOOL_INGRESSCTL")"   "$TOOL_INGRESSCTL"
+printf "%s  %s\n" "$(sha "$TOOL_RECEIPTCTL")"  "$TOOL_RECEIPTCTL"
+printf "%s  %s\n" "$(sha "$TOOL_FINALIZE")"    "$TOOL_FINALIZE"
+printf "%s  %s\n" "$(sha "$TOOL_RECEIPT")"     "$TOOL_RECEIPT"
+if [[ -n "${TOOL_REFCHECK:-}" ]]; then
+  printf "%s  %s\n" "$(sha "$TOOL_REFCHECK")"  "$TOOL_REFCHECK"
+fi
+printf "%s  %s\n" "$(sha "$NFT_CONF")"         "$NFT_CONF"
+printf "%s  %s\n" "$(sha "$NFT_INGRESS")"      "$NFT_INGRESS"
+printf "%s  %s\n" "$(sha "$INGRESS_CONF")"     "$INGRESS_CONF"
+
+echo
+echo "=== Git heads (binding) ==="
+if [[ -n "$AI_HEAD" ]]; then ok "git_ai_stack_head=$AI_HEAD"; else bad "git_ai_stack_head missing"; fi
+if [[ -n "$TOOLS_HEAD" ]]; then ok "git_aevum_tools_head=$TOOLS_HEAD"; else bad "git_aevum_tools_head missing"; fi
+
+echo
+if [[ "$FAIL" -eq 0 ]]; then
+  ok "reference placement: PASS"
+else
+  bad "reference placement: FAIL"
+fi
+
+# No receipt requested → exit with check status
+if [[ "$WITH_RECEIPT" -ne 1 ]]; then
+  exit "$FAIL"
+fi
+
+# Mint receipt that binds BOTH heads (unblocks push gate)
+if [[ "$FAIL" -eq 0 ]]; then
+  aevum-receipt note "Reference placement: PASS" \
+    component=refcheck \
+    check=reference_placement \
+    result=pass \
+    reference_placement=PASS \
+    git_ai_stack_head="$AI_HEAD" \
+    git_aevum_tools_head="$TOOLS_HEAD" \
+    git_ai_stack_origin="$AI_ORIGIN" \
+    git_aevum_tools_origin="$TOOLS_ORIGIN" \
+    sha_ingressctl="$(sha "$TOOL_INGRESSCTL")" \
+    sha_receiptctl="$(sha "$TOOL_RECEIPTCTL")" \
+    sha_finalize="$(sha "$TOOL_FINALIZE")" \
+    sha_receipt="$(sha "$TOOL_RECEIPT")" \
+    sha_refcheck="$(sha "$TOOL_REFCHECK")" \
+    sha_nftables_conf="$(sha "$NFT_CONF")" \
+    sha_aevum_ingress_nft="$(sha "$NFT_INGRESS")" \
+    sha_ingressctl_conf="$(sha "$INGRESS_CONF")" \
+    || true
+else
+  aevum-receipt note "Reference placement: FAIL" \
+    component=refcheck \
+    check=reference_placement \
+    result=fail \
+    reference_placement=FAIL \
+    git_ai_stack_head="$AI_HEAD" \
+    git_aevum_tools_head="$TOOLS_HEAD" \
+    git_ai_stack_origin="$AI_ORIGIN" \
+    git_aevum_tools_origin="$TOOLS_ORIGIN" \
+    || true
+fi
+
+exit "$FAIL"

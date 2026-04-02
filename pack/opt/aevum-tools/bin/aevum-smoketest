@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE="${AEVUM_BASE:-/var/lib/aevum/workstation}"
+
+echo "== AEVUM SMOKETEST =="
+echo "Base: $BASE"
+echo
+
+# Ensure runtime dir exists for namespaced units (tmpfiles should also create this at boot)
+if [[ ! -d /run/aevum ]]; then
+  echo "[fix] /run/aevum missing; creating (non-persistent if tmpfiles not installed)"
+  install -d -m 0755 /run/aevum
+fi
+
+echo "[mounts]"
+findmnt -no TARGET,SOURCE,FSTYPE /var/lib/aevum 2>/dev/null || true
+findmnt -no TARGET,SOURCE,FSTYPE /srv/aevum-hot 2>/dev/null || true
+echo
+
+echo "[identity]"
+if [[ -f "$BASE/identity/identity.json" ]]; then
+  echo "OK: identity.json present"
+else
+  echo "WARN: identity.json missing (identity bootstrap may have failed)"
+fi
+echo
+
+echo "[core services]"
+systemctl --no-pager -l --full status \
+  aevum-workstation-timechain.service \
+  aevum-workstation-observer.service \
+  aevum-rrp-printerd.service \
+  2>/dev/null || true
+echo
+
+echo "[failed aevum units]"
+systemctl --no-pager --failed | grep -i aevum || true
+echo
+
+echo "[journal errors (boot)]"
+journalctl -b -p err --no-pager | tail -n 120 || true
+echo
+
+echo "[aevum selftest]"
+exec python3 /usr/local/sbin/aevum_selftest.py --installed --base "$BASE" "$@"

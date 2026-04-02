@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# AEVUM_FIX_PY_HEREDOC_TERMINATORS_V1
+set -euo pipefail
+# aevum-tpm-verify-anchor: verify TPM quote embedded in an anchor json (requires tpm2-tools)
+
+if [[ $# -lt 1 ]]; then
+  echo "usage: aevum-tpm-verify-anchor <anchor.json>" >&2
+  exit 2
+fi
+
+f="$1"
+[[ -f "$f" ]] || { echo "missing file: $f" >&2; exit 2; }
+
+# Verify anchor signature (binds non-quote fields) if present
+sig_b64="$(python3 - $f <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+sig=o.get("anchor_signature",{}) or {}
+print(sig.get("sig_b64","") or o.get("signature_b64","") or "")
+PY
+ )"
+
+sig_fmt="$(python3 - $f <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+sig=o.get("anchor_signature",{}) or {}
+print(sig.get("sig_fmt","") or ("plain" if o.get("signature_format","")=="plain_r_s_base64" else ""))
+PY
+ )"
+
+pub_pem="$(python3 - $f <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("tpm_sign_public_key_pem_path",""))
+PY
+ )"
+if [[ -z "${pub_pem}" ]]; then
+  pub_pem="/var/lib/aevum/workstation/tpm_sign/sign.pub.pem"
+fi
+
+if [[ -n "${sig_b64}" && "${sig_fmt}" == "plain" ]]; then
+  [[ -f "${pub_pem}" ]] || { echo "missing TPM sign pub pem: ${pub_pem}" >&2; exit 2; }
+  # Compute canonical json without signature fields and hash it to produce event_hash
+  eh="$(python3 - $f <<'PY'
+import json,hashlib,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+o.pop("signature_b64",None)
+o.pop("signature_format",None)
+o.pop("anchor_signature",None)
+b=json.dumps(o, sort_keys=True, separators=(",",":"), ensure_ascii=False).encode("utf-8")
+print("sha256:"+hashlib.sha256(b).hexdigest())
+PY
+ )"
+  # Verify signature using offline verifier
+  code="$(/opt/aevum-tools/bin/aevum-tpm-verify-sig.py --event-hash "${eh}" --sig-json "$(python3 - "$f")" --pub "${pub_pem}" >/dev/null 2>&1; echo $? <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+sig=o.get("anchor_signature",{}) or {}
+if not sig:
+    sig={"sig_b64": o.get("signature_b64",""), "sig_fmt":"plain", "hash_alg":"sha256"}
+print(json.dumps(sig, separators=(",",":")))
+PY
+ )"
+  if [[ "${code}" != "0" ]]; then
+    echo "FAIL: anchor signature invalid" >&2
+    exit 2
+  else
+    echo "PASS: anchor signature verified"
+  fi
+else
+  echo "WARN: anchor missing plain anchor_signature; skipping anchor signature verify"
+fi
+
+command -v tpm2_checkquote >/dev/null 2>&1 || { echo "ERROR: tpm2_checkquote missing" >&2; exit 2; }
+
+ak_pub="$(python3 - $f <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("ak_pub_pem_path",""))
+PY
+ )"
+
+# Fallback: standard path
+if [[ -z "${ak_pub}" ]]; then
+  ak_pub="/var/lib/aevum/workstation/tpm_sign/ak.pub.pem"
+fi
+[[ -f "${ak_pub}" ]] || { echo "missing AK pub pem: ${ak_pub}" >&2; exit 2; }
+
+
+policy_ref="$(python3 - $f <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("tpm_pcr_policy_ref",""))
+PY
+ )"
+policy_sha="$(python3 - $f <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+v=o.get("tpm_pcr_policy_sha256","")
+print(v.split(":",1)[1] if isinstance(v,str) and v.startswith("sha256:") else "")
+PY
+ )"
+
+eventlog_path="$(python3 - $f <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("eventlog_file",""))
+PY
+ )"
+
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "${tmp}"' EXIT
+
+python3 - $f ${tmp} > ${tmp}/paths.txt <<'PY'
+import json,sys,base64,os
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+q=o.get("tpm_quote",{})
+def dec(b64,name):
+  if not b64: return None
+  p=os.path.join(sys.argv[2],name)
+  open(p,'wb').write(base64.b64decode(b64))
+  return p
+msg=dec(q.get("quote_msg_b64",""),"q.msg")
+sig=dec(q.get("quote_sig_b64",""),"q.sig")
+pcr=dec(q.get("quote_pcr_b64",""),"q.pcr")
+print(msg or "")
+print(sig or "")
+print(pcr or "")
+PY
+
+msg="$(sed -n '1p' "${tmp}/paths.txt")"
+sig="$(sed -n '2p' "${tmp}/paths.txt")"
+pcr="$(sed -n '3p' "${tmp}/paths.txt")"
+
+[[ -n "${msg}" && -n "${sig}" && -n "${pcr}" ]] || { echo "anchor missing tpm_quote fields" >&2; exit 2; }
+
+# Verify quote signature. tpm2_checkquote returns 0 if valid.
+if tpm2_checkquote --help 2>/dev/null | grep -q -- "--eventlog"; then
+  if [[ -n "${eventlog_path}" && -f "${eventlog_path}" ]]; then
+    tpm2_checkquote -u "${ak_pub}" -m "${msg}" -s "${sig}" -f "${pcr}" --eventlog "${eventlog_path}" >/dev/null
+  else
+    tpm2_checkquote -u "${ak_pub}" -m "${msg}" -s "${sig}" -f "${pcr}" >/dev/null
+  fi
+else
+  tpm2_checkquote -u "${ak_pub}" -m "${msg}" -s "${sig}" -f "${pcr}" >/dev/null
+fi
+
+# Optional: enforce PCR policy hash consistency (hard fail on mismatch)
+if [[ -n "${policy_sha}" ]]; then
+  if [[ -n "${policy_ref}" && -f "${policy_ref}" ]]; then
+    cur="$(sha256sum "${policy_ref}" | awk '{print $1}')"
+    [[ "${cur}" == "${policy_sha}" ]] && echo "PASS: policy hash matches anchor" || { echo "FAIL: policy hash mismatch (anchor=${policy_sha} current=${cur})" >&2; exit 2; }
+  elif [[ -f /etc/aevum/registry/tpm_pcr_policy.json ]]; then
+    cur="$(sha256sum /etc/aevum/registry/tpm_pcr_policy.json | awk '{print $1}')"
+    [[ "${cur}" == "${policy_sha}" ]] && echo "PASS: policy hash matches anchor (/etc)" || { echo "FAIL: policy hash mismatch (/etc) (anchor=${policy_sha} current=${cur})" >&2; exit 2; }
+  else
+    echo "WARN: anchor has policy hash but no policy file found locally"
+  fi
+else
+  echo "WARN: anchor missing tpm_pcr_policy_sha256; cannot policy-verify"
+fi
+
+echo "PASS: TPM quote verified"
+
+# Verify anchor signature over canonical digest (hard fail)
+if [[ -x /opt/aevum-tools/bin/aevum-tpm-verify-anchor.py ]]; then
+  /opt/aevum-tools/bin/aevum-tpm-verify-anchor.py --file "$f" --base /var/lib/aevum/workstation --skip-quote >/dev/null || { echo "FAIL: anchor signature invalid" >&2; exit 2; }
+  echo "PASS: anchor signature verified"
+else
+  echo "WARN: missing aevum-tpm-verify-anchor.py; skipping anchor signature verification"
+fi
+
+
+# Optional: deterministic eventlog replay comparison (works even if --eventlog is unsupported)
+if [[ -n "${eventlog_path}" && -f "${eventlog_path}" && -x /opt/aevum-tools/bin/aevum-tpm-eventlog-replay ]]; then
+  expected_json="$(python3 - $f <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+q=o.get("tpm_quote",{})
+vals=q.get("pcr_values",{})
+print(json.dumps(vals, sort_keys=True))
+PY
+ )"
+  if [[ "${expected_json}" != "{}" ]]; then
+    replay="$(/opt/aevum-tools/bin/aevum-tpm-eventlog-replay --eventlog "${eventlog_path}" --pcrs "$(python3 - "$f")" 2>/dev/null || true <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+q=o.get("tpm_quote",{})
+vals=q.get("pcr_values",{})
+print(",".join(sorted([k for k in vals.keys()], key=lambda x:int(x))))
+PY
+ )"
+    ok="$(python3 - ${expected_json} ${replay} 2>/dev/null || true <<'PY'
+import json,sys
+exp=json.loads(sys.argv[1])
+rep=json.loads(sys.argv[2]) if sys.argv[2].strip() else {}
+got=rep.get("computed_pcrs",{})
+# exp keys are pcr strings; got keys are strings too
+for k,v in exp.items():
+    if got.get(k,"").lower()!=v.lower():
+        print("mismatch",k, v, got.get(k,""))
+        raise SystemExit(2)
+print("match")
+PY
+ )"
+    if [[ "${ok}" == "match" ]]; then
+      echo "PASS: eventlog replay matches quoted PCR values"
+    else
+      echo "FAIL: eventlog replay does not match quoted PCR values" >&2
+      exit 2
+    fi
+  else
+    echo "WARN: anchor missing pcr_values; cannot replay-compare"
+  fi
+else
+  echo "WARN: no eventlog replay tool or eventlog missing; skip replay compare"
+fi
+

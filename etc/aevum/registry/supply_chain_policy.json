@@ -1,0 +1,90 @@
+{
+  "schema_id": "AEVUM:SUPPLY_CHAIN_POLICY:V1",
+  "version": "v1.0",
+  "description": "Supply chain verification policy for Aevum-Printer. Controls what provenance, signatures, and attestations are required before a bundle is accepted and applied.",
+
+  "rekor": {
+    "required_in_locked_mode": true,
+    "offline_bundle_accepted": true,
+    "rekor_server": "https://rekor.sigstore.dev",
+    "note": "In install/maintenance modes offline Sigstore bundles are accepted. In locked mode, a Rekor log entry or offline bundle is required."
+  },
+
+  "sigstore": {
+    "required": true,
+    "cosign_required": true,
+    "keyless_allowed": false,
+    "allowed_signing_identities": [
+      {
+        "comment": "Primary release identity - replace with actual OIDC subject on first real release",
+        "subject": "REPLACE_WITH_RELEASE_OIDC_SUBJECT",
+        "issuer": "https://token.actions.githubusercontent.com"
+      }
+    ],
+    "allowed_key_fingerprints": [],
+    "note": "Set keyless_allowed true only after OIDC identity is confirmed. Key-based signing also accepted via allowed_key_fingerprints."
+  },
+
+  "in_toto": {
+    "required": true,
+    "layout_path": "in-toto/root.layout",
+    "required_steps": [
+      "source-checkout",
+      "dependency-lock",
+      "build",
+      "package",
+      "manifest-generate"
+    ],
+    "required_functionaries": [],
+    "note": "All required_steps must have a corresponding .link attestation in the bundle. Functionary public keys loaded from in-toto/keys/."
+  },
+
+  "slsa": {
+    "minimum_level": 1,
+    "target_level": 3,
+    "current_level": 1,
+    "required_provenance_fields": [
+      "buildType",
+      "builder.id",
+      "invocation.configSource.uri",
+      "invocation.configSource.digest",
+      "metadata.buildStartedOn",
+      "metadata.buildFinishedOn",
+      "materials"
+    ],
+    "note": "SLSA L1 is the current floor. Advance to L3 when hermetic builds and TPM builder attestation are complete."
+  },
+
+  "bundle_accept_policy": {
+    "require_all_three_artifacts": true,
+    "require_matching_bundle_id": true,
+    "require_digest_match": true,
+    "require_sigstore_verification": true,
+    "require_intoto_layout": true,
+    "require_slsa_provenance": true,
+    "allow_unsigned_in_install_mode": true,
+    "allow_unsigned_in_maintenance_mode": true,
+    "deny_in_estop_mode": true
+  },
+
+  "receipt_policy": {
+    "emit_on_bundle_seen": true,
+    "emit_on_digest_verified": true,
+    "emit_on_sig_verified": true,
+    "emit_on_layout_verified": true,
+    "emit_on_policy_pass": true,
+    "emit_on_policy_fail": true,
+    "emit_on_apply": true,
+    "blocking_on_sig_fail_in_locked_mode": true,
+    "blocking_on_layout_fail_in_locked_mode": true
+  },
+
+  "machine_binding": {
+    "capture_device_id": true,
+    "capture_tpm_identity": true,
+    "capture_pcr_map": true,
+    "capture_pcr_banks": ["sha256", "sha384"],
+    "capture_pcr_range": "0-23",
+    "bind_acceptance_to_machine_state": true
+  }
+}

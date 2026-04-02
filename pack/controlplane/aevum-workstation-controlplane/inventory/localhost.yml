@@ -1,0 +1,28 @@
+all:
+  hosts:
+    localhost:
+      ansible_connection: local
+
+  vars:
+    # Canonical Aevum paths
+    aevum_etc: /etc/aevum
+    aevum_root: /var/lib/aevum
+    aevum_services: /var/lib/aevum/services
+    aevum_tools_prefix: /opt/aevum-tools
+    aevum_stack_root: /opt/ai-stack
+
+    # Safety switches (default-safe)
+    aevum_enforce_egress_deny: false
+    aevum_enforce_ingress_lanonly: false
+
+    # Networking hints (used for status/verification)
+    aevum_wan_if: enp37s0f0
+    aevum_lan_cidr: 192.168.1.0/24
+
+    # Daily proof ritual
+    aevum_daily_root_hour: 3
+    aevum_daily_root_minute: 17
+
+    # Compose project owner
+    aevum_compose_user: root
+    aevum_compose_group: root

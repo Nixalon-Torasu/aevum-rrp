@@ -1,0 +1,23 @@
+{
+  "notes": [
+    "Tokens are entry points, not attestations. Origin receipts MUST be decomposable (typed fields + bounded enums + pointers).",
+    "Ambiguity is recorded as explicit UNKNOWN/AMBIGUOUS reason codes, not smoothed."
+  ],
+  "operator_payload_types": [
+    "OperatorNotePayload"
+  ],
+  "origin_receipt_payload_types": [
+    "BinaryExecBatchPayload",
+    "ModuleLoadBatchPayload",
+    "JournaldSummaryPayload",
+    "WorkstationObserverPayload"
+  ],
+  "principles": {
+    "cognitive_non_reduction": true,
+    "foundation_stop_line": "workstation_commits_only",
+    "no_freeform_semantics_in_origin_receipts": true,
+    "non_governing": true
+  },
+  "schema": "AEVUM:WORKSTATION:MINT_POLICY:V1",
+  "version": "1.0.0"
+}

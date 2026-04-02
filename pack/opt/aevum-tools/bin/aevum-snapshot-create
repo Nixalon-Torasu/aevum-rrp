@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# aevum-snapshot-create
+# Best-effort snapshots of critical surfaces.
+#
+# Strategy:
+# - If btrfs is detected and targets are on btrfs: attempt btrfs subvolume snapshot of /
+# - Otherwise: create tar archives per target directory (portable, safe)
+#
+# Artifacts:
+#   /var/lib/aevum/workstation/snapshots/<timestamp>/
+#     manifest.json
+#     etc_aevum.tar.zst
+#     etc_nftables_d.tar.zst
+#     etc_systemd_aevum.tar.zst
+#     opt_aevum_tools_bin.tar.zst
+#     opt_aevum_controlplane.tar.zst
+#
+# Non-gating: always exits 0; if zstd missing, uses gzip.
+
+BASE="${BASE:-/var/lib/aevum/workstation}"
+OUTDIR="${BASE}/snapshots"
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+DIR="${OUTDIR}/${TS}"
+mkdir -p "${DIR}"
+
+compress="zstd"
+if ! command -v zstd >/dev/null 2>&1; then
+  compress="gzip"
+fi
+
+targets=(
+  "/etc/aevum:etc_aevum"
+  "/etc/nftables.d:etc_nftables_d"
+  "/etc/systemd/system:aevum_systemd_all"
+  "/opt/aevum-tools/bin:opt_aevum_tools_bin"
+  "/opt/aevum-controlplane:opt_aevum_controlplane"
+)
+
+hashes=()
+
+tar_one() {
+  local src="$1"
+  local name="$2"
+  local out="${DIR}/${name}.tar"
+  local outc="${out}"
+  if [[ "${compress}" == "zstd" ]]; then
+    outc="${out}.zst"
+    tar -C / -cf - "${src#/}" 2>/dev/null | zstd -q -T0 -o "${outc}" || true
+  else
+    outc="${out}.gz"
+    tar -C / -cf - "${src#/}" 2>/dev/null | gzip -c > "${outc}" || true
+  fi
+  if [[ -f "${outc}" ]]; then
+    h="$(sha256sum "${outc}" | awk '{print $1}')"
+    hashes+=("${name}:${h}")
+  fi
+}
+
+# Produce bounded snapshot tars
+for t in "${targets[@]}"; do
+  IFS=":" read -r src name <<<"$t"
+  [[ -e "$src" ]] || continue
+  # For systemd, only include aevum units for stability
+  if [[ "$src" == "/etc/systemd/system" ]]; then
+    tmp="$(mktemp -d)"
+    mkdir -p "${tmp}/etc/systemd/system"
+    find /etc/systemd/system -maxdepth 1 -type f -name 'aevum*.*' -print0 | while IFS= read -r -d '' f; do
+      cp -a "$f" "${tmp}/etc/systemd/system/" || true
+    done
+    # tar tmp
+    if [[ "${compress}" == "zstd" ]]; then
+      tar -C "${tmp}" -cf - etc/systemd/system 2>/dev/null | zstd -q -T0 -o "${DIR}/etc_systemd_aevum.tar.zst" || true
+      [[ -f "${DIR}/etc_systemd_aevum.tar.zst" ]] && hashes+=("etc_systemd_aevum:$(sha256sum "${DIR}/etc_systemd_aevum.tar.zst" | awk '{print $1}')")
+    else
+      tar -C "${tmp}" -cf - etc/systemd/system 2>/dev/null | gzip -c > "${DIR}/etc_systemd_aevum.tar.gz" || true
+      [[ -f "${DIR}/etc_systemd_aevum.tar.gz" ]] && hashes+=("etc_systemd_aevum:$(sha256sum "${DIR}/etc_systemd_aevum.tar.gz" | awk '{print $1}')")
+    fi
+    rm -rf "${tmp}" || true
+    continue
+  fi
+  tar_one "$src" "$name"
+done
+
+# Manifest
+export TS HASHES COMPRESS
+HASHES="${hashes[*]}"
+COMPRESS="${compress}"
+python3 - <<'PY' > "${DIR}/manifest.json"
+import json,os,platform,datetime
+ts=os.environ["TS"]
+hashes=os.environ.get("HASHES","").split()
+items=[]
+for h in hashes:
+    if ":" in h:
+        n,sha=h.split(":",1)
+        items.append({"name":n,"sha256":sha})
+meta={
+ "timestamp_utc": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+ "hostname": platform.node(),
+ "compress": os.environ.get("COMPRESS",""),
+ "items": items,
+}
+print(json.dumps(meta, indent=2, sort_keys=True))
+PY
+
+MANIFEST_HASH="$(sha256sum "${DIR}/manifest.json" | awk '{print $1}')"
+
+if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+  /opt/aevum-tools/bin/aevum-receipt note "snapshot created" component=snapshot dir="${DIR}" manifest="sha256:${MANIFEST_HASH}" items="${hashes[*]}" || true
+fi
+
+echo "OK: snapshot ${DIR} manifest=sha256:${MANIFEST_HASH}"

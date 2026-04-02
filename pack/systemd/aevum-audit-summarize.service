@@ -1,0 +1,25 @@
+[Unit]
+Description=Aevum Audit Summarizer (bounded receipt bridge)
+ConditionPathExists=/var/lib/aevum/workstation/identity/device_ed25519_sk.pem
+After=auditd.service
+Wants=auditd.service
+
+[Service]
+Type=oneshot
+RuntimeDirectory=aevum
+RuntimeDirectoryMode=0755
+ExecStart=/opt/aevum-tools/bin/aevum-audit-summarize
+
+# --- Aevum service hardening (data-plane, non-gating) ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+UMask=0077
+ReadWritePaths=/var/lib/aevum /run/aevum /var/log /etc/aevum

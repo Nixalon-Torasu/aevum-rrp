@@ -1,0 +1,31 @@
+{
+  "crypttab_options_extra": [],
+  "default_pcrs": "0,2,7",
+  "header_hash_bytes": 16777216,
+  "proof_grade_unlock": {
+    "require_mapper_present": true,
+    "require_no_ask_password": true,
+    "require_token_type_contains": [
+      "tpm2",
+      "systemd-tpm2"
+    ],
+    "require_unit_log_tpm_markers": [
+      "tpm2",
+      "unseal"
+    ]
+  },
+  "require_tpm2_device_auto": true,
+  "require_x_initrd_attach": true,
+  "tpm2_only_crypttab_extra_opts": [
+    "tries=0"
+  ],
+  "tpm2_only_mask_units": [
+    "systemd-ask-password-console.path",
+    "systemd-ask-password-console.service",
+    "systemd-ask-password-wall.path",
+    "systemd-ask-password-wall.service"
+  ],
+  "type": "aevum_luks_policy_v1",
+  "unlock_mode": "tpm2_prefer",
+  "version": "1.0.0"
+}

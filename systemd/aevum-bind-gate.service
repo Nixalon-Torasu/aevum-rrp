@@ -1,0 +1,12 @@
+[Unit]
+Description=Aevum Appliance Bind Gate (refuse to run when moved)
+DefaultDependencies=no
+After=local-fs.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/aevum_bind_gate.sh
+
+[Install]
+WantedBy=multi-user.target

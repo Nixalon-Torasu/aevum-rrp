@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Aevum TPM PCR Snapshot on boot and hourly
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=1h
+AccuracySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# aevum-gpgctl
+# Minimal helper to manage the *verification* keyring used by GitOps.
+#
+# Allowlist source:  /etc/aevum/trustedkeys.d/*.asc
+# Keyring location:  /etc/aevum/gnupg (GNUPGHOME)
+
+GNUPGHOME_DEFAULT="/etc/aevum/gnupg"
+KEYSDIR_DEFAULT="/etc/aevum/trustedkeys.d"
+
+GNUPGHOME="${GNUPGHOME:-${GNUPGHOME_DEFAULT}}"
+KEYSDIR="${KEYSDIR:-${KEYSDIR_DEFAULT}}"
+
+usage() {
+  cat >&2 <<USAGE
+Usage:
+  aevum-gpgctl init
+  aevum-gpgctl import-dir
+  aevum-gpgctl import <pubkey.asc> [more.asc...]
+  aevum-gpgctl list
+  aevum-gpgctl wipe
+
+Environment:
+  GNUPGHOME  (default: ${GNUPGHOME_DEFAULT})
+  KEYSDIR    (default: ${KEYSDIR_DEFAULT})
+USAGE
+}
+
+receipt_note(){ [[ -x /opt/aevum-tools/bin/aevum-receipt ]] && /opt/aevum-tools/bin/aevum-receipt note "$@" || true; }
+
+need_gpg() {
+  command -v gpg >/dev/null 2>&1 || { echo "ERR: gpg not installed (apt-get install gnupg)" >&2; exit 2; }
+}
+
+init_dirs() {
+  receipt_note "gpgctl init" component=controlplane gnupghome="${GNUPGHOME}" keysdir="${KEYSDIR}" || true
+  mkdir -p "${GNUPGHOME}" "${KEYSDIR}"
+  chmod 0700 "${GNUPGHOME}" || true
+  chmod 0755 "${KEYSDIR}" || true
+
+  if [[ ! -f "${GNUPGHOME}/gpg.conf" ]]; then
+    cat >"${GNUPGHOME}/gpg.conf" <<CONF
+no-greeting
+no-emit-version
+keyid-format 0xlong
+with-fingerprint
+keyserver-options no-honor-keyserver-url
+CONF
+    chmod 0644 "${GNUPGHOME}/gpg.conf" || true
+  fi
+}
+
+import_dir() {
+  receipt_note "gpgctl import-dir" component=controlplane gnupghome="${GNUPGHOME}" keysdir="${KEYSDIR}" || true
+  need_gpg
+  init_dirs
+  shopt -s nullglob
+  local keys=("${KEYSDIR}"/*.asc "${KEYSDIR}"/*.pgp "${KEYSDIR}"/*.gpg)
+  if (( ${#keys[@]} == 0 )); then
+    echo "NOTE: no public keys found in ${KEYSDIR} (add *.asc pubkeys)" >&2
+    return 0
+  fi
+  gpg --homedir "${GNUPGHOME}" --batch --quiet --import "${keys[@]}" >/dev/null 2>&1 || true
+}
+
+cmd="${1:-}"
+shift || true
+
+case "${cmd}" in
+  init)
+    init_dirs
+    echo "OK: GNUPGHOME=${GNUPGHOME} KEYSDIR=${KEYSDIR}"
+    ;;
+  import-dir)
+    import_dir
+    echo "OK: imported keys from ${KEYSDIR} into ${GNUPGHOME}"
+    ;;
+  import)
+    need_gpg
+    init_dirs
+    [[ $# -ge 1 ]] || { usage; exit 2; }
+    for f in "$@"; do
+      [[ -f "$f" ]] || { echo "ERR: not a file: $f" >&2; exit 2; }
+      install -m 0644 "$f" "${KEYSDIR}/$(basename "$f")"
+    done
+    import_dir
+    echo "OK: imported"
+    ;;
+  list)
+    need_gpg
+    init_dirs
+    gpg --homedir "${GNUPGHOME}" --list-keys --with-fingerprint --keyid-format long || true
+    ;;
+  wipe)
+    rm -rf "${GNUPGHOME}"
+    mkdir -p "${GNUPGHOME}"
+    chmod 0700 "${GNUPGHOME}" || true
+    echo "OK: wiped ${GNUPGHOME} (re-run: aevum-gpgctl import-dir)"
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

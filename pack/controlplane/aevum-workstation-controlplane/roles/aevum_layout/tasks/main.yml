@@ -1,0 +1,34 @@
+---
+- name: Ensure canonical directories exist
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - "{{ aevum_etc }}"
+    - "{{ aevum_root }}"
+    - "{{ aevum_root }}/ledger/receipts"
+    - "{{ aevum_root }}/attest/state"
+    - "{{ aevum_root }}/artifacts"
+    - "{{ aevum_root }}/backups"
+    - "{{ aevum_services }}"
+    - "{{ aevum_stack_root }}"
+    - "{{ aevum_stack_root }}/core"
+    - "{{ aevum_stack_root }}/observability"
+    - "{{ aevum_stack_root }}/knowledge"
+    - "{{ aevum_stack_root }}/rnd"
+    - "{{ aevum_stack_root }}/ai"
+
+- name: Install sample Aevum config files (non-destructive)
+  copy:
+    src: "{{ item.src }}"
+    dest: "{{ aevum_etc }}/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0640"
+    force: false
+  loop:
+    - { src: "ingressctl.conf", dest: "ingressctl.conf" }
+    - { src: "egressctl.conf", dest: "egressctl.conf" }

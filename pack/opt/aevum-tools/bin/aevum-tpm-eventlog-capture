@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# aevum-tpm-eventlog-capture
+# Captures the kernel-exposed TPM measured boot event log(s) into Aevum artifacts.
+# Best-effort; non-gating. Works even if TPM tools are absent.
+#
+# Outputs:
+#   /var/lib/aevum/<instance>/boot/eventlog/eventlog_<kind>_<ts>.(bin|txt)
+#   /var/lib/aevum/<instance>/boot/eventlog/manifest_<ts>.json
+
+BASE="/var/lib/aevum"
+INSTANCE="workstation"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base) BASE="$2"; shift 2;;
+    --instance) INSTANCE="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+
+[[ "$(id -u)" -eq 0 ]] || { echo "Run as root." >&2; exit 2; }
+
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+outdir="${BASE}/${INSTANCE}/boot/eventlog"
+mkdir -p "${outdir}"
+chmod 0700 "${outdir}" || true
+
+# Candidate sysfs sources (vary by kernel/TPM driver)
+declare -a sources=(
+  "/sys/kernel/security/tpm0/binary_bios_measurements"
+  "/sys/kernel/security/tpm0/binary_runtime_measurements"
+  "/sys/kernel/security/tpm0/ascii_bios_measurements"
+  "/sys/kernel/security/tpm0/ascii_runtime_measurements"
+)
+
+entries_json="[]"
+captured=0
+
+sha_file() { sha256sum "$1" | awk '{print $1}'; }
+
+for src in "${sources[@]}"; do
+  [[ -f "${src}" ]] || continue
+  base="$(basename "${src}")"
+  kind="${base}"
+  ext="bin"
+  [[ "${base}" == ascii_* ]] && ext="txt"
+
+  dest="${outdir}/eventlog_${kind}_${ts}.${ext}"
+  cp -f "${src}" "${dest}" || continue
+  chmod 0600 "${dest}" || true
+  h="$(sha_file "${dest}")"
+  sz="$(stat -c '%s' "${dest}" 2>/dev/null || echo 0)"
+  captured=1
+
+  # Best-effort parse with tpm2_eventlog if present and source is binary
+  parsed=""
+  if command -v tpm2_eventlog >/dev/null 2>&1 && [[ "${ext}" == "bin" ]]; then
+    parsed="${outdir}/eventlog_${kind}_${ts}.parsed.txt"
+    # Try a few invocation styles across tpm2-tools versions.
+    (tpm2_eventlog "${dest}" > "${parsed}" 2>/dev/null) || \
+    (tpm2_eventlog --eventlog "${dest}" > "${parsed}" 2>/dev/null) || \
+    (tpm2_eventlog -f "${dest}" > "${parsed}" 2>/dev/null) || true
+    if [[ -f "${parsed}" ]]; then
+      chmod 0600 "${parsed}" || true
+    else
+      parsed=""
+    fi
+  fi
+
+  entries_json="$(python3 - <<'PY'
+import json,os,sys
+entries=json.loads(os.environ.get("ENTRIES","[]"))
+entries.append({
+  "src": os.environ["SRC"],
+  "dest": os.environ["DEST"],
+  "kind": os.environ["KIND"],
+  "sha256": os.environ["HASH"],
+  "size_bytes": int(os.environ.get("SIZE","0")),
+  "parsed_path": os.environ.get("PARSED",""),
+})
+print(json.dumps(entries))
+PY
+ENTRIES="${entries_json}" SRC="${src}" DEST="${dest}" KIND="${kind}" HASH="${h}" SIZE="${sz}" PARSED="${parsed}")"
+done
+
+manifest="${outdir}/manifest_${ts}.json"
+python3 - <<'PY' > "${manifest}"
+import json,datetime,platform,os
+obj={
+  "type":"aevum_tpm_eventlog_manifest_v1",
+  "timestamp_utc": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+  "hostname": platform.node(),
+  "instance": os.environ.get("INSTANCE","workstation"),
+  "entries": json.loads(os.environ.get("ENTRIES","[]")),
+}
+print(json.dumps(obj, indent=2, sort_keys=True))
+PY
+ENTRIES="${entries_json}" INSTANCE="${INSTANCE}"
+chmod 0600 "${manifest}" || true
+
+mh="$(sha_file "${manifest}")"
+
+if [[ "${captured}" -eq 1 && -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+  /opt/aevum-tools/bin/aevum-receipt note "tpm eventlog captured" component=tpm instance="${INSTANCE}" manifest="sha256:${mh}" file="${manifest}" >/dev/null 2>&1 || true 
+fi
+
+echo "${manifest}"

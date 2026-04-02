@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Pre-commit: if pack/ files are staged, require PACK_MANIFEST to be staged too.
+
+staged_pack="$(git diff --cached --name-only -- 'pack/*' | wc -l | tr -d ' ')"
+if [[ "${staged_pack}" -eq 0 ]]; then
+  exit 0
+fi
+
+# Ensure manifests are staged when pack changes
+need1="pack/PACK_MANIFEST.sha256"
+need2="pack/PACK_MANIFEST.meta.json"
+
+if ! git diff --cached --name-only -- "${need1}" | grep -q .; then
+  echo "ERROR: pack changed but ${need1} not staged."
+  echo "Run: python3 tools/generate_pack_manifest.py"
+  exit 3
+fi
+if ! git diff --cached --name-only -- "${need2}" | grep -q .; then
+  echo "ERROR: pack changed but ${need2} not staged."
+  echo "Run: python3 tools/generate_pack_manifest.py"
+  exit 3
+fi
+
+# Also block untracked files under pack/
+untracked="$(git ls-files --others --exclude-standard 'pack/*' | head -n 1 || true)"
+if [[ -n "${untracked}" ]]; then
+  echo "ERROR: untracked file(s) under pack/. Refusing commit."
+  echo "Example: ${untracked}"
+  exit 3
+fi
+
+exit 0

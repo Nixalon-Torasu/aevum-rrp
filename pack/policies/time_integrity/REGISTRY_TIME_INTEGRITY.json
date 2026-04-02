@@ -1,0 +1,394 @@
+{
+  "date": "2026-01-21",
+  "enums": {
+    "anchor_quorum_rule": [
+      "M_OF_N_NODES",
+      "ALL_NODES_REQUIRED"
+    ],
+    "anomaly_kind": [
+      "REALTIME_BACKWARDS",
+      "REALTIME_JUMP",
+      "MONO_NONINCREASING",
+      "BOOT_ID_SHIFT",
+      "LEAP_SECOND_IRREGULARITY",
+      "MONO_DOMAIN_SHIFT",
+      "ATTESTATION_STALE",
+      "ATTESTATION_INVALID",
+      "PCR_PROFILE_MISMATCH",
+      "KEY_UNSEAL_FAILURE",
+      "LOCKDOWN_ENTERED",
+      "EMERGENCY_ALLOWLIST_EXPIRED",
+      "GOVERNANCE_VIOLATION",
+      "KEY_RATE_LIMIT_TRIP",
+      "ATTESTATION_REPLAY_SUSPECTED",
+      "NV_COUNTER_NONMONOTONIC",
+      "THRESHOLD_APPROVAL_INVALID",
+      "FEDERATION_QUORUM_MISSING",
+      "NODE_ANCHOR_SIGNATURE_INVALID",
+      "TRIPWIRE_TRIGGERED",
+      "CANARY_MISSING",
+      "GOVERNANCE_COOLDOWN_VIOLATION",
+      "FINALIZE_FRESHNESS_VIOLATION",
+      "QUORUM_ANCHOR_STALE",
+      "COUNTER_FRESHNESS_VIOLATION",
+      "COOLDOWN_HEARTBEAT_MISSING",
+      "COOLDOWN_HEARTBEAT_STALE",
+      "COOLDOWN_TRANSCRIPT_MISMATCH",
+      "COOLDOWN_HEARTBEAT_INTEGRITY_FAIL"
+    ],
+    "approval_scheme": [
+      "DUAL_CONTROL",
+      "THRESHOLD_M_OF_N"
+    ],
+    "attestation_bind_target": [
+      "ANCHOR_SET",
+      "RECONCILE_MODEL",
+      "TICK_HEAD",
+      "PRODUCER_REGISTRY",
+      "WITNESS_PINSET",
+      "PCR_PROFILE_REGISTRY",
+      "GOVERNANCE_POLICY",
+      "THRESHOLD_GROUP_REGISTRY",
+      "NV_COUNTER_STATE",
+      "NODE_REGISTRY",
+      "DEVICE_REGISTRY",
+      "TRIPWIRE_POLICY",
+      "FEDERATION_ANCHOR_POLICY"
+    ],
+    "attestation_kind": [
+      "TPM_QUOTE",
+      "EXTERNAL_ATTESTER",
+      "NONE"
+    ],
+    "confidence_class": [
+      "HIGH",
+      "MEDIUM",
+      "LOW"
+    ],
+    "conformance_case_type": [
+      "HASH",
+      "MERKLE",
+      "RECONCILE",
+      "VERIFIER",
+      "FORK",
+      "IMPORT",
+      "PROJECTION",
+      "ATTESTATION",
+      "PCR",
+      "SEALED_KEYS",
+      "PCR_GOVERNANCE",
+      "KEY_USE_RATE_LIMIT",
+      "THRESHOLD_APPROVALS",
+      "MONOTONIC_COUNTERS",
+      "FEDERATION_QUORUM",
+      "DISTRIBUTED_SHARES",
+      "TRIPWIRES",
+      "GOVERNANCE_COOLDOWN",
+      "FINALIZE_FRESHNESS",
+      "COOLDOWN_HEARTBEATS"
+    ],
+    "cooldown_chain_mode": [
+      "STRICT_CONTIGUOUS",
+      "ALLOW_GAPS_WITH_EXPLANATION"
+    ],
+    "cooldown_heartbeat_status": [
+      "OK",
+      "MISSING",
+      "STALE",
+      "INTEGRITY_FAIL"
+    ],
+    "counter_kind": [
+      "TPM_NV_COUNTER",
+      "FILE_MONOTONIC_COUNTER"
+    ],
+    "counter_op": [
+      "READ",
+      "INCREMENT"
+    ],
+    "counter_state": [
+      "OK",
+      "NONMONOTONIC",
+      "UNKNOWN"
+    ],
+    "device_kind": [
+      "TPM",
+      "YUBIKEY",
+      "HSM",
+      "OFFLINE_VAULT",
+      "OTHER"
+    ],
+    "governance_action": [
+      "PCR_ALLOWLIST_ADD",
+      "PCR_ALLOWLIST_DEPRECATE",
+      "PCR_PROFILE_DEPRECATE",
+      "WITNESS_PINSET_UPDATE",
+      "PRODUCER_REGISTRY_UPDATE",
+      "POLICY_UPDATE",
+      "GOVERNANCE_POLICY_UPDATE",
+      "THRESHOLD_GROUP_UPDATE",
+      "COUNTER_POLICY_UPDATE",
+      "NODE_REGISTRY_UPDATE",
+      "DEVICE_REGISTRY_UPDATE",
+      "TRIPWIRE_POLICY_UPDATE",
+      "FEDERATION_ANCHOR_POLICY_UPDATE"
+    ],
+    "governance_state": [
+      "PROPOSED",
+      "APPROVED",
+      "COOLDOWN",
+      "FINALIZED",
+      "REJECTED",
+      "EXPIRED"
+    ],
+    "governance_violation": [
+      "OUTSIDE_MAINT_WINDOW",
+      "INSUFFICIENT_APPROVALS",
+      "APPROVER_NOT_AUTHORIZED",
+      "MISSING_ATTESTATION_BIND",
+      "EMERGENCY_EXPIRED",
+      "COOLDOWN_VIOLATION",
+      "FRESHNESS_VIOLATION",
+      "HEARTBEAT_VIOLATION"
+    ],
+    "hash_alg": [
+      "SHA-256"
+    ],
+    "host_integrity_class": [
+      "ATTESTED",
+      "UNATTESTED",
+      "STALE",
+      "FAILED",
+      "LOCKDOWN"
+    ],
+    "import_trust_class": [
+      "LOCAL",
+      "IMPORTED_TRUSTED",
+      "IMPORTED_UNTRUSTED"
+    ],
+    "ingest_decision": [
+      "ACCEPT",
+      "QUARANTINE",
+      "REJECT"
+    ],
+    "key_storage_kind": [
+      "SEALED",
+      "HARDWARE",
+      "FILE",
+      "NONE"
+    ],
+    "key_unseal_result": [
+      "OK",
+      "PCR_MISMATCH",
+      "AUTH_FAIL",
+      "DEVICE_MISSING",
+      "POLICY_VIOLATION",
+      "UNKNOWN_ERROR"
+    ],
+    "key_use_op": [
+      "SIGN_EVENT",
+      "SIGN_TICK",
+      "SIGN_ATTESTATION",
+      "SIGN_REGISTRY",
+      "SIGN_GOVERNANCE",
+      "SIGN_THRESHOLD_SHARE",
+      "SIGN_NODE_ANCHOR",
+      "SIGN_TRIPWIRE",
+      "SIGN_COOLDOWN_HEARTBEAT"
+    ],
+    "key_use_result": [
+      "OK",
+      "DENY_LOCKDOWN",
+      "DENY_RATE_LIMIT",
+      "DENY_PCR_MISMATCH",
+      "DENY_POLICY",
+      "ERROR"
+    ],
+    "late_event_policy": [
+      "TICK_AMENDMENT",
+      "DISPUTE_LATE_EVENT"
+    ],
+    "leap_second_policy": [
+      "SMEAR",
+      "BOUNDS_ONLY"
+    ],
+    "node_role": [
+      "PRIMARY",
+      "ANCHOR",
+      "WITNESS_ONLY"
+    ],
+    "nonce_policy": [
+      "RANDOM_PER_ATTESTATION",
+      "CHAINED_FROM_TICK_HEAD"
+    ],
+    "pcr_bank": [
+      "SHA256",
+      "SHA1"
+    ],
+    "pcr_profile_state": [
+      "ACTIVE",
+      "DEPRECATED",
+      "EMERGENCY_ALLOWLIST"
+    ],
+    "producer_role": [
+      "TICKER",
+      "ATA",
+      "SENSOR",
+      "UI",
+      "IMPORTER",
+      "INDEXER",
+      "ATTESTER",
+      "GOVERNOR",
+      "NODE_ANCHOR",
+      "OTHER"
+    ],
+    "producer_trust_class": [
+      "LOCAL_TRUSTED",
+      "LOCAL_UNTRUSTED",
+      "IMPORTED",
+      "UNTRUSTED"
+    ],
+    "projection_mode": [
+      "PRIVATE_STRICT",
+      "PRIVATE_LENIENT",
+      "PUBLIC"
+    ],
+    "public_bucket_granularity": [
+      "5m",
+      "15m",
+      "1h",
+      "1d"
+    ],
+    "public_bucket_rounding": [
+      "FLOOR"
+    ],
+    "share_location_kind": [
+      "LOCAL_TPM_SEALED",
+      "EXTERNAL_HARDWARE_KEY",
+      "OFFLINE_VAULT_DEVICE",
+      "REMOTE_NODE"
+    ],
+    "threshold_alg": [
+      "FROST_ED25519",
+      "BLS12_381"
+    ],
+    "tick_fork_resolution": [
+      "UNRESOLVED",
+      "RESOLVED_PRIMARY",
+      "RESOLVED_SPLIT"
+    ],
+    "tick_miss_policy": [
+      "CATCH_UP_EMPTY_TICKS",
+      "EMIT_TICK_GAP"
+    ],
+    "time_quality_state": [
+      "SYNCED",
+      "HOLDOVER",
+      "OFFLINE",
+      "ANOMALOUS"
+    ],
+    "tripwire_action": [
+      "QUARANTINE",
+      "LOCKDOWN",
+      "DISPUTE"
+    ],
+    "utc_format": [
+      "RFC3339_Z"
+    ],
+    "validation_state": [
+      "UNVERIFIED",
+      "OBSERVED",
+      "ANCHORED",
+      "RECONCILED",
+      "DISPUTED",
+      "DEPRECATED"
+    ],
+    "verifier_profile": [
+      "STRICT",
+      "STANDARD",
+      "LENIENT"
+    ],
+    "verifier_reason_code": [
+      "MISSING_REQUIRED_FIELD",
+      "MISSING_TIME_INTEGRITY_BLOCK",
+      "DIGEST_UNKNOWN",
+      "DIGEST_MISMATCH",
+      "ENUM_UNKNOWN",
+      "TIMESTAMP_SELF_INCONSISTENT",
+      "ATTESTATION_HASH_MISMATCH",
+      "SIGNATURE_INVALID",
+      "SIGNATURE_UNTRUSTED",
+      "DEPENDENCY_MISSING",
+      "BOUNDS_INVALID",
+      "MONO_NONINCREASING_NO_ANOMALY",
+      "SEQ_REUSE_OR_ROLLBACK",
+      "DUPLICATE_TICK_INDEX",
+      "TICK_MERKLE_MISMATCH",
+      "MONO_DOMAIN_SHIFT",
+      "PRODUCER_UNREGISTERED",
+      "PRODUCER_KEY_MISMATCH",
+      "WITNESS_IDENTITY_UNPINNED",
+      "IMPORT_BATCH_MALFORMED",
+      "RECONCILE_MATH_NONDETERMINISTIC",
+      "ATTESTATION_REQUIRED_MISSING",
+      "ATTESTATION_QUOTE_INVALID",
+      "ATTESTATION_PCR_MISMATCH",
+      "ATTESTATION_BIND_MISMATCH",
+      "ATTESTATION_STALE",
+      "PCR_REGISTRY_REQUIRED_MISSING",
+      "PCR_PROFILE_UNKNOWN",
+      "PCR_PROFILE_STATE_INVALID",
+      "GOVERNANCE_RECORD_INVALID",
+      "GOVERNANCE_NOT_FINALIZED",
+      "GOVERNANCE_APPROVALS_INSUFFICIENT",
+      "MAINTENANCE_WINDOW_VIOLATION",
+      "EMERGENCY_ALLOWLIST_EXPIRED",
+      "KEY_USE_RECEIPT_REQUIRED_MISSING",
+      "KEY_USE_RECEIPT_MISMATCH",
+      "KEY_RATE_LIMIT_TRIP",
+      "THRESHOLD_GROUP_REQUIRED_MISSING",
+      "THRESHOLD_GROUP_DIGEST_MISMATCH",
+      "THRESHOLD_SIGNATURE_INVALID",
+      "NV_COUNTER_REQUIRED_MISSING",
+      "NV_COUNTER_NONMONOTONIC",
+      "ATTESTATION_REPLAY_SUSPECTED",
+      "NODE_REGISTRY_REQUIRED_MISSING",
+      "FEDERATION_QUORUM_MISSING",
+      "NODE_ANCHOR_SIGNATURE_INVALID",
+      "DEVICE_REGISTRY_REQUIRED_MISSING",
+      "TRIPWIRE_POLICY_REQUIRED_MISSING",
+      "TRIPWIRE_TRIGGERED",
+      "GOVERNANCE_COOLDOWN_VIOLATION",
+      "FINALIZE_FRESHNESS_VIOLATION",
+      "QUORUM_ANCHOR_STALE",
+      "COUNTER_FRESHNESS_VIOLATION",
+      "COOLDOWN_HEARTBEAT_MISSING",
+      "COOLDOWN_HEARTBEAT_STALE",
+      "COOLDOWN_TRANSCRIPT_MISMATCH",
+      "COOLDOWN_HEARTBEAT_INTEGRITY_FAIL"
+    ],
+    "witness_independence_dimension": [
+      "OPERATOR",
+      "NETWORK_PATH",
+      "PROTOCOL_FAMILY",
+      "GEO_REGION",
+      "DEVICE",
+      "HOST_NODE"
+    ],
+    "witness_kind": [
+      "NTP_NTS",
+      "ROUGHTIME",
+      "NTP",
+      "TLS_TIME",
+      "MANUAL",
+      "AEVUM_NODE_ANCHOR"
+    ],
+    "witness_reliability_class": [
+      "STRONG",
+      "MEDIUM",
+      "WEAK"
+    ]
+  },
+  "no_free_form_labels": true,
+  "registry_id": "AEVUMAI:TI:REGISTRY:V1",
+  "version": "1.7.0"
+}

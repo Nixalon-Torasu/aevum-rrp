@@ -1,0 +1,25 @@
+[Unit]
+Description=Aevum Module Harvest (kernel modules -> chain M)
+ConditionPathExists=/var/lib/aevum/workstation/identity/device_ed25519_sk.pem
+After=auditd.service aevum-workstation-timechain.service
+Wants=auditd.service aevum-workstation-timechain.service
+
+[Service]
+Type=oneshot
+RuntimeDirectory=aevum
+RuntimeDirectoryMode=0755
+ExecStart=/usr/local/sbin/aevum_module_harvest.py --base /var/lib/aevum/workstation
+
+# --- Aevum service hardening (data-plane, non-gating) ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+UMask=0077
+ReadWritePaths=/var/lib/aevum /run/aevum /var/log /etc/aevum

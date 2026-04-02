@@ -1,0 +1,22 @@
+[Unit]
+Description=Aevum Snapshot (portable tar snapshot of control surfaces)
+ConditionPathExists=/var/lib/aevum/workstation/identity/device_ed25519_sk.pem
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/aevum-tools/bin/aevum-snapshot-create
+
+# --- Aevum service hardening (control-plane, non-gating) ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+UMask=0077
+

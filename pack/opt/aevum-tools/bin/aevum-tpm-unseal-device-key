@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# aevum-tpm-unseal-device-key
+#
+# Unseals the TPM-bound AES key and decrypts the encrypted device signing key into /run.
+#
+# Usage:
+#   aevum-tpm-unseal-device-key --base /var/lib/aevum --instance workstation
+#   aevum-tpm-unseal-device-key --all  (attempt all instances under base/*/identity)
+#
+# Non-gating: if no .enc present, exits 0.
+
+BASE="/var/lib/aevum"
+INSTANCE="workstation"
+ALL=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base) BASE="$2"; shift 2;;
+    --instance) INSTANCE="$2"; shift 2;;
+    --all) ALL=1; shift;;
+    *) echo "Unknown arg: $1" >&2; exit 2;;
+  esac
+done
+
+[[ "$(id -u)" -eq 0 ]] || { echo "Run as root."; exit 2; }
+command -v tpm2_unseal >/dev/null 2>&1 || { echo "Missing tpm2-tools. Install: apt-get install -y tpm2-tools"; exit 3; }
+command -v python3 >/dev/null 2>&1 || { echo "Missing python3"; exit 3; }
+
+unseal_one() {
+  local inst="$1"
+  local tpmdir="${BASE}/${inst}/tpm"
+  local iddir="${BASE}/${inst}/identity"
+  local handle_file="${tpmdir}/sealed.handle"
+  local enc="${iddir}/device_ed25519_sk.pem.enc"
+  local rundir="/run/aevum/keys"
+  local runkey="${rundir}/${inst}_device_ed25519_sk.pem"
+
+  [[ -f "${enc}" ]] || return 0
+  [[ -f "${handle_file}" ]] || { echo "WARN: missing handle for ${inst}"; return 0; }
+
+  local handle; handle="$(cat "${handle_file}")"
+  mkdir -p "${rundir}"
+  chmod 0700 "${rundir}"
+
+  # Unseal AES key
+  local keybin; keybin="$(mktemp)"
+  tpm2_unseal -c "${handle}" -o "${keybin}" >/dev/null
+
+  # Decrypt into /run
+  export KEYBIN="${keybin}" ENC="${enc}" OUT="${runkey}"
+  python3 - <<'PY'
+import os, pathlib
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+key = pathlib.Path(os.environ["KEYBIN"]).read_bytes()
+blob = pathlib.Path(os.environ["ENC"]).read_bytes()
+nonce, ct = blob[:12], blob[12:]
+aad = b"aevum:device_key:v1"
+plain = AESGCM(key).decrypt(nonce, ct, aad)
+outp = pathlib.Path(os.environ["OUT"])
+outp.write_bytes(plain)
+PY
+  chmod 0400 "${runkey}"
+  rm -f "${keybin}"
+
+  if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+    /opt/aevum-tools/bin/aevum-receipt note "TPM unsealed device key" component=identity instance="${inst}" handle="${handle}" out="${runkey}" || true
+  fi
+  echo "OK: unsealed ${inst} -> ${runkey}"
+}
+
+if [[ "${ALL}" == "1" ]]; then
+  for d in "${BASE}"/*; do
+    [[ -d "$d" ]] || continue
+    inst="$(basename "$d")"
+    unseal_one "$inst" || true
+  done
+else
+  unseal_one "${INSTANCE}" || true
+fi

@@ -1,0 +1,16 @@
+{
+  "chain": "T",
+  "first_event_hash": "sha256:44d18dfe9dcf428c8d0131da798da7f596128aca48cb3db9e802a93e71f3716b",
+  "first_seq_no": 1,
+  "first_time_block_id": 1,
+  "last_event_hash": "sha256:9e288dc7fec7c6e45e871e8d6cf80b60a6802ccd608d99d79daa82beb02decc6",
+  "last_seq_no": 3,
+  "last_time_block_id": 3,
+  "line_count": 3,
+  "merkle_root_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "prev_manifest_sha256": "",
+  "schema": "AEVUM:SEGMENT_MANIFEST:V1",
+  "segment_file": "accurate/segments/T/seg_00000001_tb_1_3__seq_1_3.jsonl",
+  "segment_index": 1,
+  "segment_sha256": "sha256:198c2b7f96893867d7c85607df5b8454a42206adfb64ade4bd91634fcda7bad1"
+}

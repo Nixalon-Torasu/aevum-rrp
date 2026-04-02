@@ -1,0 +1,40 @@
+{
+  "content": {
+    "nodes": [
+      {
+        "anchor_producer_id": "node_anchor:primary:001",
+        "network_identity": {
+          "endpoint": "100.64.0.10:443",
+          "tailscale_nodekey_fp": "sha256:..."
+        },
+        "node_id": "node:primary:001",
+        "role": "PRIMARY",
+        "trust_class": "LOCAL_TRUSTED"
+      },
+      {
+        "anchor_producer_id": "node_anchor:002",
+        "network_identity": {
+          "endpoint": "100.64.0.11:443",
+          "tailscale_nodekey_fp": "sha256:..."
+        },
+        "node_id": "node:anchor:002",
+        "role": "ANCHOR",
+        "trust_class": "LOCAL_TRUSTED"
+      },
+      {
+        "anchor_producer_id": "node_anchor:003",
+        "network_identity": {
+          "endpoint": "100.64.0.12:443",
+          "tailscale_nodekey_fp": "sha256:..."
+        },
+        "node_id": "node:anchor:003",
+        "role": "ANCHOR",
+        "trust_class": "LOCAL_TRUSTED"
+      }
+    ],
+    "registry_digest": "47ebe3212101100e7c4faffcee863b301b8808ec5e0d312a4974457509f24bd8",
+    "registry_id": "AEVUM:NODEREGISTRY:V1",
+    "registry_version": "1.7.0",
+    "type": "NodeRegistry"
+  }
+}

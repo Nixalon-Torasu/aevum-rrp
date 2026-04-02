@@ -1,0 +1,20 @@
+---
+- name: Install baseline packages
+  apt:
+    name:
+      - ca-certificates
+      - curl
+      - jq
+      - git
+      - rsync
+      - gnupg
+      - nftables
+      - python3-pip
+      - unzip
+      - lsof
+    state: present
+    update_cache: true
+
+- name: Ensure systemd is reloaded (safe)
+  systemd:
+    daemon_reload: true

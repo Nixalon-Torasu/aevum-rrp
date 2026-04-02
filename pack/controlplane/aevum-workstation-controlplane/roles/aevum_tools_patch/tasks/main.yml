@@ -1,0 +1,29 @@
+---
+- name: Ensure /etc/nftables.d exists
+  file:
+    path: /etc/nftables.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Aevum nft base files (non-destructive)
+  copy:
+    src: "{{ item }}"
+    dest: "/etc/nftables.d/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+  loop:
+    - "aevum-ingress.nft"
+    - "aevum-egress.nft"
+
+- name: Install mint policy registry (bounded taxonomy)
+  copy:
+    src: mint_policy.json
+    dest: /etc/aevum/registry/mint_policy.json
+    owner: root
+    group: root
+    mode: "0644"
+    force: true

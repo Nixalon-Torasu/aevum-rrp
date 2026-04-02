@@ -1,0 +1,17 @@
+{
+  "bank": "sha256",
+  "mode": "observe",
+  "notes": "Higher evidence surface. Still observe-only to avoid bricking; includes PCR4/11 where available.",
+  "pcrs": [
+    0,
+    2,
+    4,
+    7,
+    11
+  ],
+  "profile_name": "high_assurance_observe",
+  "purpose": "boot_integrity_evidence_and_commit",
+  "quote_qualifying_data_prefix": "aevum",
+  "schema": "AEVUM:TPM:PCR_POLICY:V1",
+  "version": "1.0.0"
+}

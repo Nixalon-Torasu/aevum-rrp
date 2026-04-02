@@ -1,0 +1,19 @@
+## Aevum audit rules (minimal, bounded)
+## Focus: privileged execution + changes to Aevum control surfaces.
+## Load via augenrules --load.
+
+# Increase buffer a bit
+-b 8192
+
+# Root execve (bounded by summarizer; don't try to store everything forever here)
+-a always,exit -F arch=b64 -S execve -F euid=0 -k aevum_root_exec
+-a always,exit -F arch=b32 -S execve -F euid=0 -k aevum_root_exec
+
+# Watch Aevum surfaces
+-w /etc/aevum -p wa -k aevum_etc_aevum
+-w /etc/nftables.d -p wa -k aevum_nft
+-w /etc/systemd/system -p wa -k aevum_systemd
+-w /opt/aevum-tools/bin -p wa -k aevum_tools
+-w /opt/aevum-controlplane -p wa -k aevum_controlplane
+
+# Immutable mode off (you can enable later if you want)

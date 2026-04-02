@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "claims": {
+      "type": "object"
+    },
+    "client_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "component": {
+      "maxLength": 64,
+      "minLength": 1,
+      "type": "string"
+    },
+    "idempotency_key": {
+      "maxLength": 128,
+      "minLength": 16,
+      "type": "string"
+    },
+    "nonce_b64": {
+      "minLength": 16,
+      "type": "string"
+    },
+    "pointers": {
+      "items": {
+        "properties": {
+          "hash": {
+            "maxLength": 128,
+            "type": "string"
+          },
+          "ref": {
+            "maxLength": 1024,
+            "type": "string"
+          },
+          "ref_type": {
+            "maxLength": 32,
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref_type",
+          "ref",
+          "hash"
+        ],
+        "type": "object"
+      },
+      "maxItems": 64,
+      "type": "array"
+    },
+    "proto": {
+      "const": "AEVUM:PROTO:RRP:LOCAL_STRICT:V1_0"
+    },
+    "receipt_class": {
+      "maxLength": 64,
+      "minLength": 1,
+      "type": "string"
+    },
+    "req_id": {
+      "minLength": 10,
+      "type": "string"
+    },
+    "sig": {
+      "minLength": 16,
+      "type": "string"
+    },
+    "ts_client_utc": {
+      "minLength": 10,
+      "type": "string"
+    },
+    "ttl_ms": {
+      "maximum": 600000,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "proto",
+    "req_id",
+    "client_id",
+    "ts_client_utc",
+    "ttl_ms",
+    "nonce_b64",
+    "idempotency_key",
+    "receipt_class",
+    "component",
+    "claims",
+    "pointers",
+    "sig"
+  ],
+  "title": "Aevum ReceiptRequest",
+  "type": "object"
+}

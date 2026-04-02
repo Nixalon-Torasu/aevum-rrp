@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+
+import argparse, base64, binascii, datetime, hashlib, json, os, struct, sys
+from typing import Dict, Tuple, List, Optional
+
+ALG_SHA1   = 0x0004
+ALG_SHA256 = 0x000B
+ALG_SHA384 = 0x000C
+ALG_SHA512 = 0x000D
+ALG_SM3_256= 0x0012
+
+DEFAULT_DIGEST_SIZES = {
+    ALG_SHA1: 20,
+    ALG_SHA256: 32,
+    ALG_SHA384: 48,
+    ALG_SHA512: 64,
+    ALG_SM3_256: 32,
+}
+
+def u32(b: bytes) -> int:
+    return struct.unpack("<I", b)[0]
+
+def u16(b: bytes) -> int:
+    return struct.unpack("<H", b)[0]
+
+def parse_spec_id_event03(data: bytes) -> Dict[int, int]:
+    # Spec ID Event03 structure inside EV_NO_ACTION event data.
+    # signature[16], platformClass[4], specVersionMinor[1], specVersionMajor[1],
+    # specErrata[1], uintnSize[1], numberOfAlgorithms[4],
+    # algorithms[numberOfAlgorithms] each {algId[2], digestSize[2]},
+    # vendorInfoSize[1], vendorInfo[vendorInfoSize]
+    if len(data) < 16:
+        return {}
+    sig = data[:16]
+    if not sig.startswith(b"Spec ID Event03"):
+        return {}
+    off = 16
+    if len(data) < off + 4 + 1 + 1 + 1 + 1 + 4:
+        return {}
+    off += 4  # platformClass
+    off += 1  # minor
+    off += 1  # major
+    off += 1  # errata
+    off += 1  # uintnSize
+    n_algs = u32(data[off:off+4]); off += 4
+    alg_sizes: Dict[int,int] = {}
+    for _ in range(n_algs):
+        if len(data) < off + 4:
+            break
+        alg = u16(data[off:off+2]); sz = u16(data[off+2:off+4]); off += 4
+        alg_sizes[alg] = sz
+    return alg_sizes
+
+def sha256_extend(pcr: bytes, digest: bytes) -> bytes:
+    return hashlib.sha256(pcr + digest).digest()
+
+def read_tpm12_event(buf: bytes, off: int) -> Tuple[Optional[dict], int]:
+    # TCG_PCR_EVENT: pcrIndex u32, eventType u32, digest[20], eventSize u32, event[eventSize]
+    if len(buf) < off + 4+4+20+4:
+        return None, off
+    pcr = u32(buf[off:off+4]); off += 4
+    et = u32(buf[off:off+4]); off += 4
+    dg = buf[off:off+20]; off += 20
+    esz = u32(buf[off:off+4]); off += 4
+    if esz > 50_000_000 or len(buf) < off + esz:
+        return None, len(buf)
+    ev = buf[off:off+esz]; off += esz
+    return {"pcrIndex": pcr, "eventType": et, "sha1Digest": dg, "eventSize": esz, "event": ev}, off
+
+def read_event2(buf: bytes, off: int, alg_sizes: Dict[int,int]) -> Tuple[Optional[dict], int]:
+    # TCG_PCR_EVENT2:
+    # pcrIndex u32, eventType u32, digestCount u32,
+    # for each: algId u16, digest[algSize],
+    # eventSize u32, event[eventSize]
+    if len(buf) < off + 12:
+        return None, off
+    pcr = u32(buf[off:off+4]); off += 4
+    et = u32(buf[off:off+4]); off += 4
+    dcount = u32(buf[off:off+4]); off += 4
+    digests = []
+    for _ in range(dcount):
+        if len(buf) < off + 2:
+            return None, len(buf)
+        alg = u16(buf[off:off+2]); off += 2
+        sz = alg_sizes.get(alg, DEFAULT_DIGEST_SIZES.get(alg))
+        if sz is None or len(buf) < off + sz:
+            return None, len(buf)
+        dg = buf[off:off+sz]; off += sz
+        digests.append({"alg": alg, "digest": dg})
+    if len(buf) < off + 4:
+        return None, len(buf)
+    esz = u32(buf[off:off+4]); off += 4
+    if esz > 50_000_000 or len(buf) < off + esz:
+        return None, len(buf)
+    ev = buf[off:off+esz]; off += esz
+    return {"pcrIndex": pcr, "eventType": et, "digests": digests, "eventSize": esz, "event": ev}, off
+
+def latest_eventlog_path(instance: str, base: str) -> Optional[str]:
+    d = os.path.join(base, instance, "boot", "eventlog")
+    if not os.path.isdir(d):
+        return None
+    # prefer bios measurements
+    cand = sorted([os.path.join(d, f) for f in os.listdir(d) if f.startswith("eventlog_bios_") and f.endswith(".bin")])
+    if cand:
+        return cand[-1]
+    cand = sorted([os.path.join(d, f) for f in os.listdir(d) if f.endswith(".bin") and f.startswith("eventlog_")])
+    return cand[-1] if cand else None
+
+def main():
+    ap = argparse.ArgumentParser(description="Replay TPM measured boot eventlog to recompute PCR values (sha256 bank).")
+    ap.add_argument("--eventlog", help="Path to binary eventlog (.bin). If omitted, uses latest captured bios eventlog.")
+    ap.add_argument("--base", default="/var/lib/aevum")
+    ap.add_argument("--instance", default="workstation")
+    ap.add_argument("--pcrs", default="0,2,7", help="Comma-separated PCR indices to report (sha256).")
+    ap.add_argument("--out", help="Write JSON report to this file instead of stdout.")
+    args = ap.parse_args()
+
+    path = args.eventlog or latest_eventlog_path(args.instance, args.base)
+    if not path or not os.path.isfile(path):
+        # non-gating: emit empty report
+        report = {
+            "type": "aevum_tpm_eventlog_replay_v1",
+            "timestamp_utc": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "instance": args.instance,
+            "eventlog_path": path or "",
+            "status": "missing_eventlog",
+            "pcr_bank": "sha256",
+            "pcrs": args.pcrs,
+            "computed_pcrs": {},
+        }
+        s = json.dumps(report, indent=2, sort_keys=True)
+        if args.out:
+            os.makedirs(os.path.dirname(args.out), exist_ok=True)
+            open(args.out, "w", encoding="utf-8").write(s + "\n")
+        else:
+            print(s)
+        return 0
+
+    buf = open(path, "rb").read()
+    file_sha = hashlib.sha256(buf).hexdigest()
+
+    # Parse Spec ID Event03 to learn alg sizes; start by parsing TPM1.2 event at beginning
+    off = 0
+    alg_sizes = dict(DEFAULT_DIGEST_SIZES)
+    spec_found = False
+
+    ev0, off2 = read_tpm12_event(buf, off)
+    if ev0 and ev0["event"].startswith(b"Spec ID Event03"):
+        alg_sizes.update(parse_spec_id_event03(ev0["event"]))
+        off = off2
+        spec_found = True
+    else:
+        # Some logs might start directly with Event2; try to proceed without spec.
+        off = 0
+
+    # PCR bank init (sha256), 0-23
+    pcr_bank: Dict[int, bytes] = {i: b"\x00" * 32 for i in range(24)}
+
+    events_parsed = 0
+    sha256_events = 0
+    parse_errors = 0
+
+    # If spec was found, remaining should be event2
+    # If not, attempt event2 from start; if fails quickly, stop.
+    while off < len(buf):
+        ev, off_next = read_event2(buf, off, alg_sizes)
+        if not ev:
+            parse_errors += 1
+            break
+        off = off_next
+        events_parsed += 1
+        pcr = ev["pcrIndex"]
+        for d in ev["digests"]:
+            if d["alg"] == ALG_SHA256:
+                sha256_events += 1
+                if 0 <= pcr <= 23:
+                    pcr_bank[pcr] = sha256_extend(pcr_bank[pcr], d["digest"])
+
+    want = []
+    for part in args.pcrs.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            want.append(int(part))
+        except ValueError:
+            pass
+
+    computed = {str(i): pcr_bank.get(i, b"").hex() for i in want}
+
+    report = {
+        "type": "aevum_tpm_eventlog_replay_v1",
+        "timestamp_utc": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "instance": args.instance,
+        "eventlog_path": path,
+        "eventlog_sha256": file_sha,
+        "status": "ok",
+        "spec_id_event03_found": spec_found,
+        "events_parsed": events_parsed,
+        "sha256_digests_seen": sha256_events,
+        "parse_errors": parse_errors,
+        "pcr_bank": "sha256",
+        "pcrs": args.pcrs,
+        "computed_pcrs": computed,
+    }
+
+    s = json.dumps(report, indent=2, sort_keys=True)
+    if args.out:
+        os.makedirs(os.path.dirname(args.out), exist_ok=True)
+        open(args.out, "w", encoding="utf-8").write(s + "\n")
+    else:
+        print(s)
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())

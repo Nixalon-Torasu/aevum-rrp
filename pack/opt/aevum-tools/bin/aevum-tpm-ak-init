@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# aevum-tpm-ak-init: create persistent Attestation Key (AK) for quoting PCRs
+# Default handle: 0x81010002
+# Non-gating: exits 0 if TPM tools missing
+
+BASE="/var/lib/aevum"
+INSTANCE="workstation"
+AK_HANDLE="0x81010002"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base) BASE="$2"; shift 2;;
+    --instance) INSTANCE="$2"; shift 2;;
+    --handle) AK_HANDLE="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+
+[[ "$(id -u)" -eq 0 ]] || { echo "Run as root." >&2; exit 2; }
+
+command -v tpm2_createprimary >/dev/null 2>&1 || { echo "INFO: tpm2-tools missing; skip"; exit 0; }
+
+TPMDIR="${BASE}/${INSTANCE}/tpm_sign"
+mkdir -p "${TPMDIR}"
+chmod 0700 "${TPMDIR}"
+
+ak_handle_file="${TPMDIR}/ak.handle"
+ak_pub_pem="${TPMDIR}/ak.pub.pem"
+
+if [[ -f "${ak_handle_file}" && -f "${ak_pub_pem}" ]]; then
+  echo "OK: AK present (handle=$(cat "${ak_handle_file}"))"
+  exit 0
+fi
+
+primary_ctx="${TPMDIR}/ak.primary.ctx"
+ak_ctx="${TPMDIR}/ak.ctx"
+
+# Create primary for AK under endorsement hierarchy (e)
+tpm2_createprimary -C e -g sha256 -G ecc -c "${primary_ctx}" >/dev/null
+
+# Create AK (restricted signing key for attestation)
+tpm2_create -C "${primary_ctx}" -g sha256 -G ecc -u "${TPMDIR}/ak.pub" -r "${TPMDIR}/ak.priv" \
+  -a "fixedtpm|fixedparent|sensitivedataorigin|userwithauth|restricted|sign" >/dev/null
+
+tpm2_load -C "${primary_ctx}" -u "${TPMDIR}/ak.pub" -r "${TPMDIR}/ak.priv" -c "${ak_ctx}" >/dev/null
+
+tpm2_evictcontrol -C o -c "${ak_ctx}" "${AK_HANDLE}" >/dev/null 2>&1 || true
+tpm2_evictcontrol -C o -c "${ak_ctx}" "${AK_HANDLE}" >/dev/null
+
+tpm2_readpublic -c "${AK_HANDLE}" -f pem -o "${ak_pub_pem}" >/dev/null 2>&1 || true
+echo "${AK_HANDLE}" > "${ak_handle_file}"
+chmod 0600 "${ak_handle_file}"
+chmod 0644 "${ak_pub_pem}" || true
+
+if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+  fp="$(sha256sum "${ak_pub_pem}" 2>/dev/null | awk '{print $1}')"
+  /opt/aevum-tools/bin/aevum-receipt note "tpm ak initialized" component=tpm ak_handle="${AK_HANDLE}" ak_pub="sha256:${fp}" instance="${INSTANCE}" || true
+fi
+
+echo "OK: AK initialized handle=${AK_HANDLE} pub=${ak_pub_pem}"

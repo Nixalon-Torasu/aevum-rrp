@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# AEVUM_FIX_PY_HEREDOC_TERMINATORS_V1
+set -euo pipefail
+# aevum-tpm-policy (v0.2)
+# Manage and receipt the TPM PCR selection policy (non-gating).
+#
+# Policy file: /etc/aevum/registry/tpm_pcr_policy.json
+# Profiles:    /etc/aevum/registry/tpm_pcr_profiles/*.json
+#
+# Stable pointers:
+#   /var/lib/aevum/workstation/tpm_sign/policies/CURRENT_POLICY.json
+#   /var/lib/aevum/workstation/accurate/state/CURRENT_TPM_PCR_POLICY.json
+# Change meta:
+#   /var/lib/aevum/workstation/tpm_sign/policies/LAST_CHANGE_META.json
+#
+# Subcommands:
+#   show | hash
+#   profiles               (list available profiles)
+#   apply <profile> [why]  (copy profile -> policy, then sync, emits transition receipt)
+#   sync                   (copy /etc policy -> timestamped file; update pointers; emit receipts if changed)
+#   set --pcrs "0,2,7" [--bank sha256] [--mode observe|enforce] [--reason "why"]  (writes /etc policy; then sync)
+
+BASE="/var/lib/aevum/workstation"
+POLICY_ETC="/etc/aevum/registry/tpm_pcr_policy.json"
+PROFILE_DIR="/etc/aevum/registry/tpm_pcr_profiles"
+CHANGE_META="${BASE}/tpm_sign/policies/LAST_CHANGE_META.json"
+INSTANCE="workstation"
+CMD="${1:-show}"; shift || true
+
+die(){ echo "ERROR: $*" >&2; exit 2; }
+need_root(){ [[ "$(id -u)" -eq 0 ]] || die "Run as root."; }
+
+record_change_meta(){
+  local method="$1"; local profile="${2:-}"; local reason="${3:-}"
+  mkdir -p "$(dirname "${CHANGE_META}")" || true
+  python3 - <<'PY' "${CHANGE_META}" "${method}" "${profile}" "${reason}"
+import json,sys,datetime
+path=sys.argv[1]; method=sys.argv[2]; profile=sys.argv[3]; reason=sys.argv[4]
+o={
+  "ts_utc": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+  "method": method,
+  "profile": profile,
+  "reason": reason,
+}
+open(path,"w",encoding="utf-8").write(json.dumps(o, indent=2, sort_keys=True)+"\n")
+PY
+  chmod 0600 "${CHANGE_META}" || true
+}
+
+policy_hash(){
+  [[ -f "${POLICY_ETC}" ]] || { echo ""; return 0; }
+  sha256sum "${POLICY_ETC}" | awk '{print $1}'
+}
+
+policy_pcrs(){
+  python3 - <<'PY' "${POLICY_ETC}"
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+p=o.get("pcrs",[0,2,7])
+print(",".join(str(int(x)) for x in p))
+PY
+}
+
+policy_bank(){
+  python3 - <<'PY' "${POLICY_ETC}"
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("bank","sha256"))
+PY
+}
+
+policy_mode(){
+  python3 - <<'PY' "${POLICY_ETC}"
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("mode","observe"))
+PY
+}
+
+do_show(){
+  [[ -f "${POLICY_ETC}" ]] || die "missing ${POLICY_ETC}"
+  cat "${POLICY_ETC}"
+}
+
+do_hash(){
+  h="$(policy_hash)"
+  [[ -n "${h}" ]] && echo "sha256:${h}" || echo ""
+}
+
+do_profiles(){
+  if [[ -d "${PROFILE_DIR}" ]]; then
+    ls -1 "${PROFILE_DIR}"/*.json 2>/dev/null | sed 's#.*/##' | sed 's/\.json$//' | sort || true
+  fi
+}
+
+do_apply(){
+  need_root
+  local profile="${1:-}"; shift || true
+  local reason="${*:-}"
+  [[ -n "${profile}" ]] || die "apply requires a profile name"
+  local src="${PROFILE_DIR}/${profile}.json"
+  [[ -f "${src}" ]] || die "missing profile: ${src}"
+  cp -f "${src}" "${POLICY_ETC}"
+  chmod 0644 "${POLICY_ETC}" || true
+  record_change_meta "apply-profile" "${profile}" "${reason}"
+  do_sync
+}
+
+do_sync(){
+  need_root
+  [[ -f "${POLICY_ETC}" ]] || die "missing ${POLICY_ETC}"
+  h="$(policy_hash)"
+  [[ -n "${h}" ]] || die "cannot hash policy"
+  mkdir -p "${BASE}/tpm_sign/policies" "${BASE}/accurate/state"
+  chmod 0700 "${BASE}/tpm_sign" "${BASE}/tpm_sign/policies" "${BASE}/accurate" "${BASE}/accurate/state" 2>/dev/null || true
+
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  out="${BASE}/tpm_sign/policies/policy_${ts}.json"
+  cp -f "${POLICY_ETC}" "${out}"
+  chmod 0600 "${out}" || true
+
+  cur="${BASE}/tpm_sign/policies/CURRENT_POLICY.json"
+  curh=""
+  if [[ -f "${cur}" ]]; then
+    curh="$(sha256sum "${cur}" | awk '{print $1}')"
+  fi
+
+  cp -f "${out}" "${cur}" || true
+  chmod 0600 "${cur}" || true
+  cp -f "${out}" "${BASE}/accurate/state/CURRENT_TPM_PCR_POLICY.json" || true
+  chmod 0600 "${BASE}/accurate/state/CURRENT_TPM_PCR_POLICY.json" || true
+
+  if [[ "${curh}" != "${h}" ]]; then
+    if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+      /opt/aevum-tools/bin/aevum-receipt note "tpm pcr policy updated" component=tpm_policy instance="${INSTANCE}" \
+        file="${out}" manifest="sha256:${h}" bank="$(policy_bank)" pcrs="$(policy_pcrs)" mode="$(policy_mode)" || true
+
+      # Explicit transition receipt (policy evolution audit)
+      fromh="${curh}"; toh="${h}"
+      method=""; profile=""; reason=""
+      if [[ -f "${CHANGE_META}" ]]; then
+        method="$(python3 - <<'PY' "${CHANGE_META}"
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("method",""))
+PY
+)"
+        profile="$(python3 - <<'PY' "${CHANGE_META}"
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("profile",""))
+PY
+)"
+        reason="$(python3 - <<'PY' "${CHANGE_META}"
+import json,sys
+o=json.load(open(sys.argv[1],'r',encoding='utf-8'))
+print(o.get("reason",""))
+PY
+)"
+      fi
+      /opt/aevum-tools/bin/aevum-receipt note "tpm_pcr_policy_transition" component=tpm_policy_transition instance="${INSTANCE}" \
+        from_policy_sha256="sha256:${fromh}" to_policy_sha256="sha256:${toh}" method="${method}" profile="${profile}" reason="${reason}" \
+        bank="$(policy_bank)" pcrs="$(policy_pcrs)" || true
+    fi
+    echo "OK: synced new policy sha256:${h} -> ${out}"
+  else
+    echo "OK: policy unchanged sha256:${h}"
+  fi
+}
+
+do_set(){
+  need_root
+  pcrs=""
+  bank="sha256"
+  mode="observe"
+  reason=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --pcrs) pcrs="$2"; shift 2;;
+      --bank) bank="$2"; shift 2;;
+      --mode) mode="$2"; shift 2;;
+      --reason) reason="$2"; shift 2;;
+      *) shift;;
+    esac
+  done
+  [[ -f "${POLICY_ETC}" ]] || die "missing ${POLICY_ETC}"
+  tmp="$(mktemp)"
+  python3 - <<'PY' "${POLICY_ETC}" "${tmp}" "${pcrs}" "${bank}" "${mode}"
+import json,sys
+src, dst = sys.argv[1], sys.argv[2]
+pcrs_s = sys.argv[3].strip()
+bank = sys.argv[4].strip() or "sha256"
+mode = sys.argv[5].strip() or "observe"
+o=json.load(open(src,'r',encoding='utf-8'))
+if pcrs_s:
+    p=[int(x.strip()) for x in pcrs_s.split(",") if x.strip()]
+    o["pcrs"]=p
+o["bank"]=bank
+o["mode"]=mode
+open(dst,'w',encoding='utf-8').write(json.dumps(o, indent=2, sort_keys=True)+"\n")
+PY
+  cp -f "${tmp}" "${POLICY_ETC}"
+  chmod 0644 "${POLICY_ETC}" || true
+  rm -f "${tmp}" || true
+  record_change_meta "set" "" "${reason}"
+  do_sync
+}
+
+case "${CMD}" in
+  show) do_show;;
+  hash) do_hash;;
+  profiles) do_profiles;;
+  apply) do_apply "$@";;
+  sync) do_sync;;
+  set) do_set "$@";;
+  *) die "unknown subcommand: ${CMD}";;
+esac

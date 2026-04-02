@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Aevum TPM Anchor on boot and daily
+
+[Timer]
+OnBootSec=180s
+OnUnitActiveSec=1d
+AccuracySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

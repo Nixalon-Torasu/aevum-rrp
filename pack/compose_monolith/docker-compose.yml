@@ -1,0 +1,175 @@
+name: ai-stack
+
+x-dns: &dns
+  dns:
+    - 127.0.0.11
+  dns_search:
+    - .
+  dns_opt:
+    - ndots:0
+
+x-proxy-env: &proxy_env
+  HTTP_PROXY:  http://172.28.0.2:3128
+  HTTPS_PROXY: http://172.28.0.2:3128
+  NO_PROXY: localhost,127.0.0.1,0.0.0.0,proxy,ollama,qdrant,tika,open-webui,kb-api,kb-indexer,.local
+
+networks:
+  backend:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+          ip_range: 172.28.10.0/24
+  egress:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/16
+          ip_range: 172.29.10.0/24
+
+services:
+  # SINGLE OUTBOUND GATEWAY (only container with egress)
+  proxy:
+    image: sameersbn/squid:3.5.27-2
+    profiles: ["egress"]
+    hostname: proxy
+    restart: unless-stopped
+    networks:
+      backend:
+        aliases: [proxy]
+      egress:
+        ipv4_address: 172.29.0.2
+    volumes:
+      - /opt/ai-stack/data/squid/cache:/var/spool/squid
+      - /opt/ai-stack/data/squid/logs:/var/log/squid
+      - /opt/ai-stack/conf/squid/squid.conf:/etc/squid/squid.conf:ro
+    <<: *dns
+
+  # SINGLE INBOUND GATEWAY INGRESS POINT
+  reverse-proxy:
+    image: caddy:2
+    restart: unless-stopped
+    networks: [backend]
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - /opt/ai-stack/conf/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /opt/ai-stack/data/caddy:/data
+    <<: *dns
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    restart: unless-stopped
+    #profiles: ["experimental"]
+    networks: [backend]
+    depends_on: [ollama, qdrant, tika]
+    environment:
+      <<: *proxy_env
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_API_BASE_URL: http://ollama:11434
+      VECTOR_DB: qdrant
+      QDRANT_URI: http://qdrant:6333
+      TIKA_SERVER_URL: http://tika:9998
+      ENABLE_RAG: "true"
+      WEBUI_SECRET_KEY_FILE: /app/backend/data/.webui_secret_key
+    volumes:
+      - /opt/ai-stack/data/open-webui:/app/backend/data
+      - /opt/kb/library:/kb:ro
+    <<: *dns
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      <<: *proxy_env
+      OLLAMA_KEEP_ALIVE: "2h"
+      NVIDIA_VISIBLE_DEVICES: "all"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+    gpus: all
+    runtime: nvidia
+    volumes:
+      - /opt/ai-stack/data/ollama:/root/.ollama
+    <<: *dns
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    networks: [backend]
+    volumes:
+      - /opt/ai-stack/data/qdrant:/qdrant/storage
+    <<: *dns
+
+  tika:
+    image: apache/tika:2.9.2.0
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      <<: *proxy_env
+      JAVA_TOOL_OPTIONS: "-Dhttp.proxyHost=proxy -Dhttp.proxyPort=3128 -Dhttps.proxyHost=proxy -Dhttps.proxyPort=3128"
+    <<: *dns
+
+  kb-indexer:
+    image: python:3.11-slim
+    restart: unless-stopped
+    profiles: ["experimental"]
+    networks: [backend]
+    depends_on: [proxy, ollama, qdrant, tika]
+    environment:
+      <<: *proxy_env
+      OLLAMA_URL: http://ollama:11434
+      TIKA_URL: http://tika:9998
+      QDRANT_URL: http://qdrant:6333
+      EMBED_MODEL: bge-m3
+      COLLECTION: aevum_kb
+      CHUNK_CHARS: "2000"
+      CHUNK_OVERLAP: "250"
+      SOURCE_DIR: /kb
+      STATE_DIR: /state
+    volumes:
+      - /opt/kb/library:/kb:ro
+      - /opt/kb/state:/state
+      - /opt/kb/app:/app:ro
+      - /opt/kb/venv/indexer:/venv
+    command: >
+      sh -lc '
+        if [ ! -f /venv/.ready ]; then
+          python -m venv /venv &&
+          /venv/bin/pip install -U pip &&
+          /venv/bin/pip install --no-cache-dir fastapi uvicorn requests qdrant-client watchfiles &&
+          touch /venv/.ready;
+        fi;
+        exec /venv/bin/python /app/kb_indexer.py
+      '
+    <<: *dns
+
+  kb-api:
+    image: python:3.11-slim
+    restart: unless-stopped
+    profiles: ["experimental"]
+    networks: [backend]
+    ports:
+      - "127.0.0.1:8811:8811"
+    depends_on: [proxy, qdrant, ollama]
+    environment:
+      <<: *proxy_env
+      OLLAMA_URL: http://ollama:11434
+      QDRANT_URL: http://qdrant:6333
+      EMBED_MODEL: bge-m3
+      COLLECTION: aevum_kb
+    volumes:
+      - /opt/kb/app:/app:ro
+      - /opt/kb/venv/api:/venv
+    command: >
+      sh -lc '
+        if [ ! -f /venv/.ready ]; then
+          python -m venv /venv &&
+          /venv/bin/pip install -U pip &&
+          /venv/bin/pip install --no-cache-dir fastapi uvicorn requests qdrant-client watchfiles &&
+          touch /venv/.ready;
+        fi;
+        exec /venv/bin/python /app/kb_api.py
+      '
+    <<: *dns

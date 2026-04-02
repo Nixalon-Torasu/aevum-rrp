@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aevum.operator.epoch_state.v1",
+  "title": "Aevum Epoch State v1",
+  "type": "object",
+  "required": [
+    "epoch_kind",
+    "epoch",
+    "updated_utc"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "epoch_kind": {
+      "type": "string",
+      "enum": [
+        "trust",
+        "evidence",
+        "identity"
+      ]
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647
+    },
+    "updated_utc": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{6}Z$"
+    },
+    "key_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "pubkey_b64": {
+      "type": "string",
+      "minLength": 40,
+      "maxLength": 128
+    }
+  }
+}

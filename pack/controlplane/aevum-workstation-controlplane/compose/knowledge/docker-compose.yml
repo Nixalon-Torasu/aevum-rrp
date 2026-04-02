@@ -1,0 +1,67 @@
+services:
+  tika:
+    image: apache/tika:2.9.2.1
+    networks: [aevum_net]
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    volumes:
+      - /var/lib/aevum/services/qdrant:/qdrant/storage
+    networks: [aevum_net]
+    restart: unless-stopped
+
+  arangodb:
+    image: arangodb:3.12
+    environment:
+      ARANGO_ROOT_PASSWORD: ${ARANGO_ROOT_PASSWORD}
+    volumes:
+      - /var/lib/aevum/services/arangodb:/var/lib/arangodb3
+    networks: [aevum_net]
+    restart: unless-stopped
+
+  paperless-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: paperless
+      POSTGRES_USER: paperless
+      POSTGRES_PASSWORD: ${PAPERLESS_DB_PASSWORD}
+    volumes:
+      - /var/lib/aevum/services/paperless/postgres:/var/lib/postgresql/data
+    networks: [aevum_net]
+    restart: unless-stopped
+
+  paperless:
+    image: ghcr.io/paperless-ngx/paperless-ngx:2.13.5
+    depends_on:
+      - paperless-db
+      - tika
+    environment:
+      PAPERLESS_REDIS: redis://paperless-redis:6379
+      PAPERLESS_DBHOST: paperless-db
+      PAPERLESS_DBNAME: paperless
+      PAPERLESS_DBUSER: paperless
+      PAPERLESS_DBPASS: ${PAPERLESS_DB_PASSWORD}
+      PAPERLESS_TIKA_ENABLED: "1"
+      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: ""
+      PAPERLESS_TIKA_ENDPOINT: http://tika:9998
+      PAPERLESS_TIME_ZONE: UTC
+      PAPERLESS_OCR_LANGUAGE: eng
+      PAPERLESS_SECRET_KEY: ${PAPERLESS_SECRET_KEY}
+      PAPERLESS_URL: ${PAPERLESS_URL}
+    volumes:
+      - /var/lib/aevum/services/paperless/data:/usr/src/paperless/data
+      - /var/lib/aevum/services/paperless/media:/usr/src/paperless/media
+      - /var/lib/aevum/services/paperless/export:/usr/src/paperless/export
+      - /var/lib/aevum/services/paperless/consume:/usr/src/paperless/consume
+    networks: [aevum_net]
+    restart: unless-stopped
+
+  paperless-redis:
+    image: redis:7
+    networks: [aevum_net]
+    restart: unless-stopped
+
+networks:
+  aevum_net:
+    external: true

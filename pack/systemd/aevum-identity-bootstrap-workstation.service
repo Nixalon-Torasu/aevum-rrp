@@ -1,0 +1,31 @@
+[Unit]
+Description=Aevum Identity Bootstrap (workstation)
+After=network.target
+
+[Service]
+Type=oneshot
+RuntimeDirectory=aevum
+RuntimeDirectoryMode=0755
+ExecStart=/usr/local/sbin/aevum_identity_bootstrap.py --base /var/lib/aevum --instance workstation --seam-layout
+RemainAfterExit=yes
+
+
+
+
+
+# --- Aevum service hardening (data-plane, non-gating) ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+UMask=0077
+ReadWritePaths=/var/lib/aevum /run/aevum /var/log /etc/aevum
+
+[Install]
+WantedBy=multi-user.target

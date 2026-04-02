@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+import argparse, os, json, os, socket, subprocess, uuid, hashlib
+from pathlib import Path
+from datetime import datetime, timezone
+
+SIGN_KEY = Path.home() / ".ssh" / "aevum_ledger_ed25519"
+
+RECEIPTS_DIR = Path("/var/lib/aevum/ledger/receipts")
+AI_STACK_DIR = Path(os.environ.get("AEVUM_STACK_DIR", "/opt/aevum-controlplane"))
+
+def utcnow():
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+def iso(dt):
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+def try_git_head():
+    try:
+        out = subprocess.check_output(["git", "-C", str(AI_STACK_DIR), "rev-parse", "HEAD"], stderr=subprocess.DEVNULL)
+        return out.decode().strip()
+    except Exception:
+        return None
+
+def parse_kv(kv_list):
+    d = {}
+    for item in kv_list or []:
+        if "=" not in item:
+            raise SystemExit(f"--kv expects key=value, got: {item}")
+        k, v = item.split("=", 1)
+        d[k] = v
+    return d
+
+def main():
+    ap = argparse.ArgumentParser(description="Create an Aevum ledger receipt (JSON) in the receipts spool.")
+    ap.add_argument("--kind", default="note", help="Receipt kind (e.g., policy_change, ingress_mode, deploy, note)")
+    ap.add_argument("--message", required=True, help="Human message (do not include secrets)")
+    ap.add_argument("--kv", action="append", default=[], help="Add a key=value field (repeatable)")
+    ap.add_argument("--fields-json", default=None, help="JSON object string to merge into fields")
+    ap.add_argument("--no-git", action="store_true", help="Do not include ${AEVUM_STACK_DIR:-/opt/aevum-controlplane} git HEAD")
+    args = ap.parse_args()
+
+    created = utcnow()
+    day = created.strftime("%Y%m%d")
+    outdir = RECEIPTS_DIR / day
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    fields = parse_kv(args.kv)
+    if args.fields_json:
+        try:
+            extra = json.loads(args.fields_json)
+            if not isinstance(extra, dict):
+                raise ValueError("fields-json must be a JSON object")
+            fields.update(extra)
+        except Exception as e:
+            raise SystemExit(f"Bad --fields-json: {e}")
+
+    receipt = {
+        "receipt_version": "aevum.receipt.v1",
+        "id": str(uuid.uuid4()),
+        "created_utc": iso(created),
+        "kind": args.kind,
+        "actor": os.environ.get("USER", "unknown"),
+        "host": socket.gethostname(),
+        "message": args.message,
+        "fields": fields,
+    }
+
+    if not args.no_git:
+        head = try_git_head()
+        if head:
+            receipt["git_ai_stack_head"] = head
+
+    # Deterministic-ish filename, but content is what matters
+    short = receipt["id"].split("-")[0]
+    fname = f"{created.strftime('%Y%m%dT%H%M%SZ')}_{args.kind}_{short}.json"
+    path = outdir / fname
+
+    path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    # ---- Leaf hash (MUST match ledger finalizer hashing) + signature ----
+    canon = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    rh = hashlib.sha256(canon).hexdigest()
+
+    leaf_path = path.with_suffix(path.suffix + ".leaf")
+    leaf_path.write_text(f"sha256:{rh}  {path.name}\n", encoding="utf-8")
+
+    subprocess.run(
+        ["ssh-keygen", "-Y", "sign", "-f", str(SIGN_KEY), "-n", "file", str(leaf_path)],
+        check=True
+    )
+
+    print(str(path))
+
+if __name__ == "__main__":
+    main()

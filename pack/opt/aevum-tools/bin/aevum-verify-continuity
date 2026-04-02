@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec /opt/aevum-tools/bin/aevum-verify-continuity.py "$@"

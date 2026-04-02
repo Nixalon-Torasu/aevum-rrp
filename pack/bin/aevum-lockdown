@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# aevum-lockdown: make key control-plane files immutable (chattr +i) to resist casual drift.
+# WARNING: This can brick normal admin workflows if you forget you enabled it.
+# Use only after the system is stable.
+#
+# Usage:
+#   sudo aevum-lockdown enable
+#   sudo aevum-lockdown disable
+#
+# Targets:
+# - /etc/aevum/registry/*
+# - /etc/audit/rules.d/aevum*.rules
+# - /etc/sysctl.d/99-aevum-hardening.conf
+# - /etc/systemd/system/aevum-*.service|timer
+#
+# Stores list at: /etc/aevum/lockdown_files.txt
+#
+cmd="${1:-}"
+
+[[ "$(id -u)" -eq 0 ]] || { echo "Run as root." >&2; exit 2; }
+command -v chattr >/dev/null 2>&1 || { echo "INFO: chattr missing (install e2fsprogs)"; exit 0; }
+
+list="/etc/aevum/lockdown_files.txt"
+collect() {
+  {
+    find /etc/aevum/registry -type f 2>/dev/null || true
+    ls -1 /etc/audit/rules.d/aevum*.rules 2>/dev/null || true
+    [[ -f /etc/sysctl.d/99-aevum-hardening.conf ]] && echo /etc/sysctl.d/99-aevum-hardening.conf
+    ls -1 /etc/systemd/system/aevum-*.service /etc/systemd/system/aevum-*.timer 2>/dev/null || true
+  } | sort -u
+}
+
+case "${cmd}" in
+  enable)
+    collect > "${list}"
+    while IFS= read -r f; do
+      [[ -f "${f}" ]] || continue
+      chattr +i "${f}" 2>/dev/null || true
+    done < "${list}"
+    if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+      /opt/aevum-tools/bin/aevum-receipt note "lockdown enabled" component=hardening filelist="${list}" || true
+    fi
+    echo "OK: lockdown enabled"
+    ;;
+  disable)
+    if [[ -f "${list}" ]]; then
+      while IFS= read -r f; do
+        [[ -f "${f}" ]] || continue
+        chattr -i "${f}" 2>/dev/null || true
+      done < "${list}"
+    fi
+    if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+      /opt/aevum-tools/bin/aevum-receipt note "lockdown disabled" component=hardening filelist="${list}" || true
+    fi
+    echo "OK: lockdown disabled"
+    ;;
+  *)
+    echo "usage: aevum-lockdown enable|disable" >&2
+    exit 2
+    ;;
+esac

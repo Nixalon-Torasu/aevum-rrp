@@ -1,0 +1,11 @@
+[Unit]
+Description=Aevum Boot Integrity Snapshot (boot + daily)
+
+[Timer]
+OnBootSec=4min
+OnCalendar=daily
+Persistent=true
+AccuracySec=15m
+
+[Install]
+WantedBy=timers.target

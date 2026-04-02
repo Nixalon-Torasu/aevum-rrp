@@ -1,0 +1,24 @@
+[Unit]
+Description=Aevum Healthcheck (non-gating)
+ConditionPathExists=/var/lib/aevum/workstation/identity/device_ed25519_sk.pem
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RuntimeDirectory=aevum
+RuntimeDirectoryMode=0755
+ExecStart=/usr/local/sbin/aevum_healthcheck.py
+
+# --- Aevum service hardening (data-plane, non-gating) ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+UMask=0077
+ReadWritePaths=/var/lib/aevum /run/aevum /var/log /etc/aevum

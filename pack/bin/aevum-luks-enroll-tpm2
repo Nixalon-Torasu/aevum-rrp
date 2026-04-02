@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# aevum-luks-enroll-tpm2: enroll a LUKS2 volume keyslot in TPM2 using systemd-cryptenroll.
+# Intended for a *fresh install* where root or /var/lib/aevum is already LUKS2.
+# This is not a repartitioner; it does not create LUKS containers.
+#
+# Usage:
+#   sudo aevum-luks-enroll-tpm2 --device /dev/nvme0n1p3
+#   sudo aevum-luks-enroll-tpm2 --root
+#
+# Notes:
+# - Choose PCR policy carefully. PCR7 ties to SecureBoot state.
+# - Record the action with receipts; it must not be silent.
+
+DEVICE=""
+ROOT=0
+PCRS="${AEVUM_TPM2_PCRS:-0,2,7}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --device) DEVICE="$2"; shift 2;;
+    --root) ROOT=1; shift;;
+    --pcrs) PCRS="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+
+[[ "$(id -u)" -eq 0 ]] || { echo "Run as root." >&2; exit 2; }
+
+command -v systemd-cryptenroll >/dev/null 2>&1 || {
+  echo "INFO: systemd-cryptenroll missing (install systemd >= 248)."
+  exit 0
+}
+
+if [[ "${ROOT}" == "1" ]]; then
+  # try to locate the root dm-crypt device backing /
+  DEV_MAPPER="$(findmnt -n -o SOURCE / | tr -d '\n\r')"
+  if [[ "${DEV_MAPPER}" =~ ^/dev/mapper/ ]]; then
+    DEVICE="${DEV_MAPPER}"
+  else
+    echo "ERROR: / is not on /dev/mapper/* (not an encrypted root?)"
+    exit 3
+  fi
+fi
+
+[[ -n "${DEVICE}" ]] || { echo "ERROR: provide --device or --root"; exit 2; }
+
+# Best-effort check it's LUKS
+if ! cryptsetup isLuks "${DEVICE}" >/dev/null 2>&1; then
+  echo "INFO: ${DEVICE} is not LUKS; skip."
+  exit 0
+fi
+
+LUKS_UUID="$(cryptsetup luksUUID "${DEVICE}" 2>/dev/null | tr -d '\n\r' || true)"
+echo "Enrolling TPM2 on ${DEVICE} with PCRs=${PCRS}"
+systemd-cryptenroll "${DEVICE}" --tpm2-device=auto --tpm2-pcrs="${PCRS}" || {
+  echo "WARN: systemd-cryptenroll failed"
+  exit 0
+}
+
+if [[ -x /opt/aevum-tools/bin/aevum-luks-token-snapshot ]]; then
+  /opt/aevum-tools/bin/aevum-luks-token-snapshot --device "${DEVICE}" || true
+fi
+
+
+if [[ -x /opt/aevum-tools/bin/aevum-luks-expected-tokens ]]; then
+  # Set expected token metadata hash from latest token snapshot (state, receipted)
+  /opt/aevum-tools/bin/aevum-luks-expected-tokens set --pcrs "${PCRS}" || true
+fi
+
+if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+  /opt/aevum-tools/bin/aevum-receipt note "luks tpm2 enroll" component=crypto device="${DEVICE}" luks_uuid="${LUKS_UUID}" pcrs="${PCRS}" || true
+fi
+echo "OK"

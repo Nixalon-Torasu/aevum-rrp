@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# AEVUM_FIX_PY_HEREDOC_TERMINATORS_V1
+set -euo pipefail
+# aevum-registry-verify (v0.2)
+# Verifies:
+#  (A) Device-bound registry manifest signature (Ed25519) + file digests
+#  (B) Optional per-file GPG detached signatures (*.asc) using /etc/aevum/gnupg
+#
+# Modes:
+#  --strict        -> exit nonzero if device-manifest verification fails
+#  --require-gpg   -> also require that every registry file has a valid .asc
+# Default remains non-gating (returns 0) unless --strict is specified.
+
+REG="/etc/aevum/registry"
+BASE="/var/lib/aevum/workstation"
+GNUPGHOME_VERIFY="${GNUPGHOME_VERIFY:-/etc/aevum/gnupg}"
+
+STRICT=0
+REQUIRE_GPG=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --strict) STRICT=1; shift;;
+    --require-gpg) REQUIRE_GPG=1; shift;;
+    --registry) REG="$2"; shift 2;;
+    --base) BASE="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+
+[[ "$(id -u)" -eq 0 ]] || { echo "Run as root." >&2; exit 2; }
+[[ -d "${REG}" ]] || { echo "INFO: registry missing; skip"; exit 0; }
+
+manifest_ok=0
+gpg_fails=0
+gpg_checked=0
+
+# --- A) Device manifest verification (Python inline) ---
+pyout="$(python3 - <<'PY' "${REG}" "${BASE}" 2>&1 || true
+import sys, json, base64, hashlib, pathlib
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from cryptography.exceptions import InvalidSignature
+
+reg=pathlib.Path(sys.argv[1])
+base=pathlib.Path(sys.argv[2])
+
+m = reg/"REGISTRY_MANIFEST.json"
+s = reg/"REGISTRY_MANIFEST.sig.ed25519.b64"
+
+def canon_bytes(obj):
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+def sha256_hex(b: bytes)->str:
+    return hashlib.sha256(b).hexdigest()
+
+def file_sha256(p: pathlib.Path)->str:
+    h=hashlib.sha256()
+    with p.open("rb") as f:
+        for ch in iter(lambda:f.read(65536), b""):
+            h.update(ch)
+    return h.hexdigest()
+
+if not m.exists() or not s.exists():
+    print("MANIFEST_MISSING")
+    sys.exit(3)
+
+mbytes = m.read_bytes().rstrip(b"\n")
+sig = base64.b64decode(s.read_text().strip())
+
+# load pub from device identity
+identity = json.loads((base/"identity"/"identity.json").read_text(encoding="utf-8"))
+pub_b64 = (identity.get("keys",{}).get("device_signing_key",{}) or {}).get("public_key_b64","")
+if not pub_b64:
+    print("MANIFEST_MISSING_PUB")
+    sys.exit(6)
+pub_raw = base64.b64decode(pub_b64)
+pk = Ed25519PublicKey.from_public_bytes(pub_raw)
+try:
+    pk.verify(sig, mbytes)
+except InvalidSignature:
+    print("MANIFEST_BAD_SIG")
+    sys.exit(4)
+
+manifest = json.loads(mbytes.decode("utf-8"))
+entries = manifest.get("entries", [])
+bad=[]
+for e in entries:
+    rel = e.get("path","")
+    expected = (e.get("sha256","") or "").replace("sha256:","")
+    p = reg/rel
+    if not p.exists():
+        bad.append(rel+":missing")
+        continue
+    got = file_sha256(p)
+    if got != expected:
+        bad.append(rel+":sha256_mismatch")
+
+if bad:
+    print("MANIFEST_BAD_FILES " + ",".join(bad)[:800])
+    sys.exit(5)
+
+print("MANIFEST_OK sha256=sha256:"+sha256_hex(mbytes))
+sys.exit(0)
+PY
+)"
+if echo "${pyout}" | grep -q "^MANIFEST_OK"; then
+  manifest_ok=1
+  echo "${pyout}" | sed -n 's/^MANIFEST_OK //p' | while read -r rest; do
+    [[ -x /opt/aevum-tools/bin/aevum-receipt ]] && /opt/aevum-tools/bin/aevum-receipt note "registry manifest OK" component=registry ${rest} || true
+  done
+else
+  echo "WARN: registry manifest verify FAIL: ${pyout}" >&2
+  [[ -x /opt/aevum-tools/bin/aevum-receipt ]] && /opt/aevum-tools/bin/aevum-receipt warn "registry manifest FAIL" component=registry reason="$(echo "${pyout}" | tr '\n' ' ' | cut -c1-200)" || true
+fi
+
+# --- B) Optional GPG detached signatures ---
+if command -v gpg >/dev/null 2>&1 && [[ -d "${GNUPGHOME_VERIFY}" ]]; then
+  while read -r f; do
+    [[ -f "${f}" ]] || continue
+    # ignore manifest/signature files
+    bn="$(basename "${f}")"
+    [[ "${bn}" == "REGISTRY_MANIFEST.json" ]] && continue
+    [[ "${bn}" == "REGISTRY_MANIFEST.sig.ed25519.b64" ]] && continue
+    [[ "${bn}" == "REGISTRY_MANIFEST.sig.tpm_p256_plain.b64" ]] && continue
+    [[ "${bn}" == *.asc ]] && continue
+    sig="${f}.asc"
+    gpg_checked=$((gpg_checked+1))
+    if [[ ! -f "${sig}" ]]; then
+      if [[ "${REQUIRE_GPG}" -eq 1 ]]; then
+        echo "WARN: registry missing .asc: ${f}" >&2
+        gpg_fails=$((gpg_fails+1))
+      fi
+      continue
+    fi
+    if ! gpg --homedir "${GNUPGHOME_VERIFY}" --batch --quiet --verify "${sig}" "${f}" >/dev/null 2>&1; then
+      echo "WARN: registry signature FAIL: ${f}" >&2
+      gpg_fails=$((gpg_fails+1))
+      [[ -x /opt/aevum-tools/bin/aevum-receipt ]] && /opt/aevum-tools/bin/aevum-receipt warn "registry GPG sig FAIL" component=gpg file="${f}" sig="${sig}" || true
+    else
+      [[ -x /opt/aevum-tools/bin/aevum-receipt ]] && /opt/aevum-tools/bin/aevum-receipt note "registry GPG sig OK" component=gpg file="${f}" sig="${sig}" || true
+    fi
+  done < <(python3 - <<'PY'
+import os
+REG="/etc/aevum/registry"
+for root,dirs,fn in os.walk(REG):
+    for f in sorted(fn):
+        if f.startswith("."):
+            continue
+        p=os.path.join(root,f)
+        if os.path.isfile(p):
+            print(p)
+PY
+)
+else
+  echo "INFO: gpg missing or keyring missing; skip gpg checks" >&2
+fi
+
+# summary
+if [[ "${gpg_fails}" -gt 0 ]]; then
+  echo "WARN: ${gpg_fails} GPG registry signature issues" >&2
+fi
+if [[ "${manifest_ok}" -ne 1 ]]; then
+  if [[ "${STRICT}" -eq 1 ]]; then
+    echo "ERROR: strict registry verification failed" >&2
+    exit 10
+  fi
+fi
+echo "OK: registry verification complete (manifest_ok=${manifest_ok} gpg_fails=${gpg_fails})"
+exit 0

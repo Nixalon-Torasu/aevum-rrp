@@ -1,0 +1,503 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONF="/etc/aevum/egressctl.conf"
+
+# Optional overlays
+OVERLAY_DIR="/etc/aevum/egressctl.d"
+if [[ -d "${OVERLAY_DIR}" ]]; then
+  for f in "${OVERLAY_DIR}"/*.conf; do
+    [[ -f "$f" ]] && source "$f"
+  done
+fi
+[[ -f "$CONF" ]] && source "$CONF"
+
+: "${STATE_FILE:=/var/lib/aevum/attest/state/egress.state}"
+: "${NFT_FILE:=/etc/nftables.d/aevum-egress.nft}"
+: "${DEFAULT_WINDOW_SECONDS:=600}"
+: "${LOG_PREFIX:=AEVUM_NFT OUT_DROP }"
+: "${LOG_RATE:=10/second}"
+
+# Container egress mode:
+# - allow_all  : during egress windows, all detected docker bridges may egress (DNS/HTTP(S))
+# - allowlist  : during egress windows, ONLY configured networks/labels may egress
+: "${CONTAINER_MODE:=${EGRESS_CONTAINER_MODE:-allow_all}}"
+: "${ALLOW_DOCKER_IFACES:=${EGRESS_ALLOW_DOCKER_IFACES:-}}"
+: "${ALLOW_DOCKER_NETWORKS:=${EGRESS_ALLOW_DOCKER_NETWORKS:-}}"
+: "${ALLOW_LABELS:=${EGRESS_ALLOW_LABELS:-}}"
+: "${DEST_MODE:=${EGRESS_DEST_MODE:-any}}"
+: "${ALLOW_DST_V4:=${EGRESS_ALLOW_DST_V4:-}}"
+: "${ALLOW_DST_V6:=${EGRESS_ALLOW_DST_V6:-}}"
+: "${ALLOW_DOMAINS:=${EGRESS_ALLOW_DOMAINS:-}}"
+: "${DNS_MODE:=${EGRESS_DNS_MODE:-any}}"
+: "${DNS_SERVERS_V4:=${EGRESS_DNS_SERVERS_V4:-}}"
+: "${DNS_SERVERS_V6:=${EGRESS_DNS_SERVERS_V6:-}}"
+
+
+: "${OBSERVE_MODE:=${EGRESS_OBSERVE:-0}}"
+need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 2; }; }
+need nft
+need sha256sum
+need date
+need sed
+need ip
+
+
+list_container_ifaces() {
+  # Docker bridge interfaces typically: docker0 and br-<hex>
+  # We treat these as "container forward sources" for policy.
+  ip -o link show | awk -F': ' '{print $2}' | awk '{print $1}' | grep -E '^(docker0|br-[0-9a-f]+)$' || true
+}
+
+
+docker_available() { command -v docker >/dev/null 2>&1; }
+
+resolve_bridge_from_network() {
+  local net="$1"
+  [[ -n "$net" ]] || return 0
+  docker_available || return 0
+  # Prefer explicit bridge name option; fallback to br-<idprefix> heuristic.
+  python3 - "$net" <<'PY' 2>/dev/null || true
+import json, subprocess, sys
+net = sys.argv[1]
+try:
+    out = subprocess.check_output(["docker","network","inspect",net], text=True)
+    j = json.loads(out)[0]
+    opts = j.get("Options") or {}
+    b = opts.get("com.docker.network.bridge.name") or ""
+    if b:
+        print(b)
+    else:
+        nid = (j.get("Id") or "").replace("-", "")
+        if nid:
+            print("br-" + nid[:12])
+except Exception:
+    pass
+PY
+}
+
+resolve_allow_ifaces() {
+  # Start with explicit ifaces, then add bridge ifaces for network names.
+  local ifs=""
+  if [[ -n "${ALLOW_DOCKER_IFACES:-}" ]]; then
+    ifs="${ALLOW_DOCKER_IFACES}"
+  fi
+  if [[ -n "${ALLOW_DOCKER_NETWORKS:-}" ]]; then
+    for n in ${ALLOW_DOCKER_NETWORKS}; do
+      b="$(resolve_bridge_from_network "$n")"
+      [[ -n "$b" ]] && ifs="${ifs} ${b}"
+    done
+  fi
+  # Normalize: unique + existing only.
+  local out=""
+  for x in ${ifs}; do
+    [[ -n "$x" ]] || continue
+    if ip link show "$x" >/dev/null 2>&1; then
+      out="${out} ${x}"
+    fi
+  done
+  echo "$out" | tr ' ' '\n' | awk 'NF' | sort -u | tr '\n' ' '
+}
+
+resolve_allow_ipv4_from_labels() {
+  # Return container IPv4 addresses for labeled containers.
+  docker_available || return 0
+  [[ -n "${ALLOW_LABELS:-}" ]] || return 0
+
+  local ids=""
+  for lab in ${ALLOW_LABELS}; do
+    # lab can be key or key=value
+    ids="${ids} $(docker ps -q --filter "label=${lab}" || true)"
+  done
+  ids="$(echo "$ids" | tr ' ' '\n' | awk 'NF' | sort -u | tr '\n' ' ')"
+  [[ -n "$ids" ]] || return 0
+
+  python3 - $ids <<'PY' 2>/dev/null || true
+import json, subprocess, sys
+ids = sys.argv[1:]
+ips=set()
+for cid in ids:
+    try:
+        out = subprocess.check_output(["docker","inspect",cid], text=True)
+        j = json.loads(out)[0]
+        nets = (j.get("NetworkSettings") or {}).get("Networks") or {}
+        for ninfo in nets.values():
+            ip = (ninfo or {}).get("IPAddress")
+            if ip:
+                ips.add(ip)
+    except Exception:
+        pass
+for ip in sorted(ips):
+    print(ip)
+PY
+}
+
+ensure_allowlist_sets() {
+  ensure_tables
+  nft list set inet aevum_egress aevum_allow_ifaces >/dev/null 2>&1 || nft 'add set inet aevum_egress aevum_allow_ifaces { type ifname; flags interval; }' >/dev/null 2>&1 || true
+  nft list set inet aevum_egress aevum_allow_v4 >/dev/null 2>&1 || nft 'add set inet aevum_egress aevum_allow_v4 { type ipv4_addr; flags interval; }' >/dev/null 2>&1 || true
+}
+
+refresh_allowlist_sets() {
+  [[ "${CONTAINER_MODE}" == "allowlist" ]] || return 0
+  ensure_allowlist_sets
+
+  nft 'flush set inet aevum_egress aevum_allow_ifaces' >/dev/null 2>&1 || true
+  nft 'flush set inet aevum_egress aevum_allow_v4' >/dev/null 2>&1 || true
+
+  local ifs ips
+  ifs="$(resolve_allow_ifaces)"
+  ips="$(resolve_allow_ipv4_from_labels || true)"
+
+  for ifc in $ifs; do
+    nft "add element inet aevum_egress aevum_allow_ifaces { \"$ifc\" }" >/dev/null 2>&1 || true
+  done
+  while read -r ip4; do
+    [[ -n "$ip4" ]] || continue
+    nft "add element inet aevum_egress aevum_allow_v4 { $ip4 }" >/dev/null 2>&1 || true
+  done < <(echo "$ips")
+
+  receipt note "egress allowlist refreshed" component=egress mode=allowlist ifaces="$ifs" labels="${ALLOW_LABELS:-}" networks="${ALLOW_DOCKER_NETWORKS:-}" ruleset_sha256="$(state_hash)" || true
+}
+
+
+ensure_dst_sets() {
+  ensure_tables
+  nft list set inet aevum_egress aevum_allow_dst4 >/dev/null 2>&1 || nft 'add set inet aevum_egress aevum_allow_dst4 { type ipv4_addr; flags interval; }' >/dev/null 2>&1 || true
+  nft list set inet aevum_egress aevum_allow_dst6 >/dev/null 2>&1 || nft 'add set inet aevum_egress aevum_allow_dst6 { type ipv6_addr; flags interval; }' >/dev/null 2>&1 || true
+}
+
+refresh_dst_sets() {
+  [[ "${DEST_MODE}" == "allowlist" ]] || return 0
+  ensure_dst_sets
+  nft 'flush set inet aevum_egress aevum_allow_dst4' >/dev/null 2>&1 || true
+  nft 'flush set inet aevum_egress aevum_allow_dst6' >/dev/null 2>&1 || true
+
+  for x in ${ALLOW_DST_V4}; do
+    [[ -n "$x" ]] || continue
+    nft "add element inet aevum_egress aevum_allow_dst4 { $x }" >/dev/null 2>&1 || true
+  done
+  for x in ${ALLOW_DST_V6}; do
+    [[ -n "$x" ]] || continue
+    nft "add element inet aevum_egress aevum_allow_dst6 { $x }" >/dev/null 2>&1 || true
+  done
+
+  # Domain resolution is best-effort. If DNS is blocked, you must seed IPs manually in ALLOW_DST_V4/V6.
+  if command -v getent >/dev/null 2>&1 && [[ -n "${ALLOW_DOMAINS:-}" ]]; then
+    for d in ${ALLOW_DOMAINS}; do
+      getent ahostsv4 "$d" 2>/dev/null | awk '{print $1}' | sort -u | while read -r ip; do
+        [[ -n "$ip" ]] || continue
+        nft "add element inet aevum_egress aevum_allow_dst4 { $ip }" >/dev/null 2>&1 || true
+      done
+      getent ahostsv6 "$d" 2>/dev/null | awk '{print $1}' | sort -u | while read -r ip6; do
+        [[ -n "$ip6" ]] || continue
+        nft "add element inet aevum_egress aevum_allow_dst6 { $ip6 }" >/dev/null 2>&1 || true
+      done
+    done
+  fi
+
+  receipt note "egress destination allowlist refreshed" component=egress mode=dst_allowlist v4="${ALLOW_DST_V4}" v6="${ALLOW_DST_V6}" domains="${ALLOW_DOMAINS:-}" ruleset_sha256="$(state_hash)" || true
+}
+
+ensure_dns_sets() {
+  ensure_tables
+  nft list set inet aevum_egress aevum_allow_dns4 >/dev/null 2>&1 || nft 'add set inet aevum_egress aevum_allow_dns4 { type ipv4_addr; flags interval; }' >/dev/null 2>&1 || true
+  nft list set inet aevum_egress aevum_allow_dns6 >/dev/null 2>&1 || nft 'add set inet aevum_egress aevum_allow_dns6 { type ipv6_addr; flags interval; }' >/dev/null 2>&1 || true
+}
+
+refresh_dns_sets() {
+  [[ "${DNS_MODE}" == "allowlist" ]] || return 0
+  ensure_dns_sets
+  nft 'flush set inet aevum_egress aevum_allow_dns4' >/dev/null 2>&1 || true
+  nft 'flush set inet aevum_egress aevum_allow_dns6' >/dev/null 2>&1 || true
+  for x in ${DNS_SERVERS_V4}; do
+    [[ -n "$x" ]] || continue
+    nft "add element inet aevum_egress aevum_allow_dns4 { $x }" >/dev/null 2>&1 || true
+  done
+  for x in ${DNS_SERVERS_V6}; do
+    [[ -n "$x" ]] || continue
+    nft "add element inet aevum_egress aevum_allow_dns6 { $x }" >/dev/null 2>&1 || true
+  done
+  receipt note "egress DNS allowlist refreshed" component=egress mode=dns_allowlist v4="${DNS_SERVERS_V4}" v6="${DNS_SERVERS_V6}" ruleset_sha256="$(state_hash)" || true
+}
+configure_forward_chain_locked() {
+  # Default drop with logged drops; allow established + intra-bridge only.
+  nft list chain inet aevum_egress forward >/dev/null 2>&1 || nft 'add chain inet aevum_egress forward { type filter hook forward priority -100 ; policy drop ; }' >/dev/null 2>&1 || true
+  nft 'flush chain inet aevum_egress forward' >/dev/null 2>&1 || true
+  # Observe mode: log new forwarded connections during window (bounded by rate).
+  if [[ "${OBSERVE_MODE}" == "1" ]]; then
+    nft 'add rule inet aevum_egress forward ct state new meta l4proto { tcp, udp } limit rate 50/second log prefix "AEVUM_EGRESS_OBS FWD " flags all counter' >/dev/null 2>&1 || true
+  fi
+  nft 'add rule inet aevum_egress forward ct state established,related accept comment "aevum_fwd_established"' >/dev/null 2>&1 || true
+
+  while read -r ifc; do
+    [[ -n "$ifc" ]] || continue
+    nft "add rule inet aevum_egress forward iifname \"$ifc\" oifname \"$ifc\" accept comment \"aevum_container_intra_${ifc}\"" >/dev/null 2>&1 || true
+  done < <(list_container_ifaces)
+
+  nft "add rule inet aevum_egress forward limit rate ${LOG_RATE} log prefix \"${LOG_PREFIX}FWD_DROP \" flags all counter drop comment \"aevum_egress_fwd_logdrop\"" >/dev/null 2>&1 || true
+}
+
+configure_forward_chain_window() {
+  local tag="$1"
+  nft list chain inet aevum_egress forward >/dev/null 2>&1 || nft 'add chain inet aevum_egress forward { type filter hook forward priority -100 ; policy drop ; }' >/dev/null 2>&1 || true
+  nft 'flush chain inet aevum_egress forward' >/dev/null 2>&1 || true
+  # Observe mode: log new forwarded connections during window (bounded by rate).
+  if [[ "${OBSERVE_MODE}" == "1" ]]; then
+    nft 'add rule inet aevum_egress forward ct state new meta l4proto { tcp, udp } limit rate 50/second log prefix "AEVUM_EGRESS_OBS FWD " flags all counter' >/dev/null 2>&1 || true
+  fi
+  nft 'add rule inet aevum_egress forward ct state established,related accept comment "aevum_fwd_established"' >/dev/null 2>&1 || true
+
+  # Allow intra-bridge always.
+  while read -r ifc; do
+    [[ -n "$ifc" ]] || continue
+    nft "add rule inet aevum_egress forward iifname \"$ifc\" oifname \"$ifc\" accept comment \"aevum_container_intra_${ifc}\"" >/dev/null 2>&1 || true
+  done < <(list_container_ifaces)
+
+  if [[ "${CONTAINER_MODE}" == "allowlist" ]]; then
+    refresh_allowlist_sets
+    # Allow only allowlisted ifaces or allowlisted IPs to egress (DNS + HTTP/S)
+    if [[ "${DNS_MODE}" == "allowlist" ]]; then
+      nft 'add rule inet aevum_egress forward iifname @aevum_allow_ifaces ip daddr @aevum_allow_dns4 udp dport 53 accept comment "aevum_fwd_dns_allowlist"' >/dev/null 2>&1 || true
+      nft 'add rule inet aevum_egress forward iifname @aevum_allow_ifaces ip daddr @aevum_allow_dns4 tcp dport 53 accept comment "aevum_fwd_dns_tcp_allowlist"' >/dev/null 2>&1 || true
+      nft 'add rule inet aevum_egress forward iifname @aevum_allow_ifaces ip6 daddr @aevum_allow_dns6 udp dport 53 accept comment "aevum_fwd_dns6_allowlist"' >/dev/null 2>&1 || true
+      nft 'add rule inet aevum_egress forward iifname @aevum_allow_ifaces ip6 daddr @aevum_allow_dns6 tcp dport 53 accept comment "aevum_fwd_dns6_tcp_allowlist"' >/dev/null 2>&1 || true
+    else
+      nft 'add rule inet aevum_egress forward iifname @aevum_allow_ifaces udp dport 53 accept comment "aevum_fwd_dns_allowlist"' >/dev/null 2>&1 || true
+      nft 'add rule inet aevum_egress forward iifname @aevum_allow_ifaces tcp dport 53 accept comment "aevum_fwd_dns_tcp_allowlist"' >/dev/null 2>&1 || true
+    fi
+    if [[ "${DEST_MODE}" == "allowlist" ]]; then
+      nft "add rule inet aevum_egress forward iifname @aevum_allow_ifaces ip daddr @aevum_allow_dst4 tcp dport 443 accept comment \"$tag\"" >/dev/null 2>&1 || true
+      nft "add rule inet aevum_egress forward iifname @aevum_allow_ifaces ip daddr @aevum_allow_dst4 tcp dport 80 accept comment \"$tag\"" >/dev/null 2>&1 || true
+      nft "add rule inet aevum_egress forward iifname @aevum_allow_ifaces ip6 daddr @aevum_allow_dst6 tcp dport 443 accept comment \"$tag\"" >/dev/null 2>&1 || true
+      nft "add rule inet aevum_egress forward iifname @aevum_allow_ifaces ip6 daddr @aevum_allow_dst6 tcp dport 80 accept comment \"$tag\"" >/dev/null 2>&1 || true
+    else
+      nft "add rule inet aevum_egress forward iifname @aevum_allow_ifaces tcp dport 443 accept comment \"$tag\"" >/dev/null 2>&1 || true
+      nft "add rule inet aevum_egress forward iifname @aevum_allow_ifaces tcp dport 80 accept comment \"$tag\"" >/dev/null 2>&1 || true
+    fi
+
+    if [[ "${DNS_MODE}" == "allowlist" ]]; then
+      nft 'add rule inet aevum_egress forward ip saddr @aevum_allow_v4 ip daddr @aevum_allow_dns4 udp dport 53 accept comment "aevum_fwd_dns_ip_allowlist"' >/dev/null 2>&1 || true
+      nft 'add rule inet aevum_egress forward ip saddr @aevum_allow_v4 ip daddr @aevum_allow_dns4 tcp dport 53 accept comment "aevum_fwd_dns_tcp_ip_allowlist"' >/dev/null 2>&1 || true
+      nft 'add rule inet aevum_egress forward ip6 daddr @aevum_allow_dns6 udp dport 53 accept comment "aevum_fwd_dns6_ip_allowlist"' >/dev/null 2>&1 || true
+      nft 'add rule inet aevum_egress forward ip6 daddr @aevum_allow_dns6 tcp dport 53 accept comment "aevum_fwd_dns6_tcp_ip_allowlist"' >/dev/null 2>&1 || true
+    else
+      nft 'add rule inet aevum_egress forward ip saddr @aevum_allow_v4 udp dport 53 accept comment "aevum_fwd_dns_ip_allowlist"' >/dev/null 2>&1 || true
+      nft 'add rule inet aevum_egress forward ip saddr @aevum_allow_v4 tcp dport 53 accept comment "aevum_fwd_dns_tcp_ip_allowlist"' >/dev/null 2>&1 || true
+    fi
+    if [[ "${DEST_MODE}" == "allowlist" ]]; then
+      nft "add rule inet aevum_egress forward ip saddr @aevum_allow_v4 ip daddr @aevum_allow_dst4 tcp dport 443 accept comment \"$tag\"" >/dev/null 2>&1 || true
+      nft "add rule inet aevum_egress forward ip saddr @aevum_allow_v4 ip daddr @aevum_allow_dst4 tcp dport 80 accept comment \"$tag\"" >/dev/null 2>&1 || true
+      nft "add rule inet aevum_egress forward ip6 saddr ::/0 ip6 daddr @aevum_allow_dst6 tcp dport 443 accept comment \"$tag\"" >/dev/null 2>&1 || true
+      nft "add rule inet aevum_egress forward ip6 saddr ::/0 ip6 daddr @aevum_allow_dst6 tcp dport 80 accept comment \"$tag\"" >/dev/null 2>&1 || true
+    else
+      nft "add rule inet aevum_egress forward ip saddr @aevum_allow_v4 tcp dport 443 accept comment \"$tag\"" >/dev/null 2>&1 || true
+      nft "add rule inet aevum_egress forward ip saddr @aevum_allow_v4 tcp dport 80 accept comment \"$tag\"" >/dev/null 2>&1 || true
+    fi
+  else
+    # allow_all: any detected docker bridge can egress during window (DNS + HTTP/S)
+    while read -r ifc; do
+      [[ -n "$ifc" ]] || continue
+      if [[ "${DNS_MODE}" == "allowlist" ]]; then
+        nft "add rule inet aevum_egress forward iifname \"$ifc\" ip daddr @aevum_allow_dns4 udp dport 53 accept comment \"aevum_fwd_dns_${ifc}\"" >/dev/null 2>&1 || true
+        nft "add rule inet aevum_egress forward iifname \"$ifc\" ip daddr @aevum_allow_dns4 tcp dport 53 accept comment \"aevum_fwd_dns_tcp_${ifc}\"" >/dev/null 2>&1 || true
+        nft "add rule inet aevum_egress forward iifname \"$ifc\" ip6 daddr @aevum_allow_dns6 udp dport 53 accept comment \"aevum_fwd_dns6_${ifc}\"" >/dev/null 2>&1 || true
+        nft "add rule inet aevum_egress forward iifname \"$ifc\" ip6 daddr @aevum_allow_dns6 tcp dport 53 accept comment \"aevum_fwd_dns6_tcp_${ifc}\"" >/dev/null 2>&1 || true
+      else
+        nft "add rule inet aevum_egress forward iifname \"$ifc\" udp dport 53 accept comment \"aevum_fwd_dns_${ifc}\"" >/dev/null 2>&1 || true
+        nft "add rule inet aevum_egress forward iifname \"$ifc\" tcp dport 53 accept comment \"aevum_fwd_dns_tcp_${ifc}\"" >/dev/null 2>&1 || true
+      fi
+      if [[ "${DEST_MODE}" == "allowlist" ]]; then
+        nft "add rule inet aevum_egress forward iifname \"$ifc\" ip daddr @aevum_allow_dst4 tcp dport 443 accept comment \"$tag\"" >/dev/null 2>&1 || true
+        nft "add rule inet aevum_egress forward iifname \"$ifc\" ip daddr @aevum_allow_dst4 tcp dport 80 accept comment \"$tag\"" >/dev/null 2>&1 || true
+        nft "add rule inet aevum_egress forward iifname \"$ifc\" ip6 daddr @aevum_allow_dst6 tcp dport 443 accept comment \"$tag\"" >/dev/null 2>&1 || true
+        nft "add rule inet aevum_egress forward iifname \"$ifc\" ip6 daddr @aevum_allow_dst6 tcp dport 80 accept comment \"$tag\"" >/dev/null 2>&1 || true
+      else
+        nft "add rule inet aevum_egress forward iifname \"$ifc\" tcp dport 443 accept comment \"$tag\"" >/dev/null 2>&1 || true
+        nft "add rule inet aevum_egress forward iifname \"$ifc\" tcp dport 80 accept comment \"$tag\"" >/dev/null 2>&1 || true
+      fi
+    done < <(list_container_ifaces)
+  fi
+
+  nft "add rule inet aevum_egress forward limit rate ${LOG_RATE} log prefix \"${LOG_PREFIX}FWD_DROP \" flags all counter drop comment \"aevum_egress_fwd_logdrop\"" >/dev/null 2>&1 || true
+}
+sanitize_comment() {
+  # nft comment tokenization is strict; keep it alnum + _-. only
+  echo "$1" | sed -E 's/[^A-Za-z0-9_.-]+/_/g'
+}
+
+state_hash() {
+  nft list ruleset 2>/dev/null | sha256sum | awk '{print $1}'
+}
+
+write_state_file() {
+  local h
+  h="$(state_hash)"
+  mkdir -p "$(dirname "$STATE_FILE")"
+  {
+    echo "timestamp_utc=$(date -u +%Y%m%dT%H%M%SZ)"
+    echo "ruleset_sha256=$h"
+  } > "$STATE_FILE"
+}
+
+receipt() {
+  # Use receipt printer if present; otherwise no-op with visible message.
+  if [[ -x /opt/aevum-tools/bin/aevum-receipt ]]; then
+    /opt/aevum-tools/bin/aevum-receipt "$@"
+  else
+    echo "NOTE: aevum-receipt not found; skipping receipt -> $*"
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  aevum-egressctl status
+  aevum-egressctl close
+  aevum-egressctl run <seconds> -- <command...>
+
+Behavior:
+  - Default state: egress allowed (safe default).
+  - Container mode is controlled by /etc/aevum/egressctl.conf (EGRESS_CONTAINER_MODE=allow_all|allowlist)
+  - "run": temporarily allows tcp/443 + tcp/80 for <seconds> (customize later), then closes.
+  - All nft comments are quoted and sanitized to avoid parse errors.
+EOF
+}
+
+ensure_tables() {
+  # Ensure base file is loaded; don't override anything else.
+  nft -f "$NFT_FILE" >/dev/null 2>&1 || true
+}
+
+close_egress() {
+  ensure_tables
+  nft list table inet aevum_egress >/dev/null 2>&1 || nft -f "$NFT_FILE" >/dev/null 2>&1 || true
+  nft list chain inet aevum_egress output >/dev/null 2>&1 || nft 'add chain inet aevum_egress output { type filter hook output priority -100 ; policy drop ; }' >/dev/null 2>&1 || true
+  nft 'flush chain inet aevum_egress output' >/dev/null 2>&1 || true
+
+  # Observe mode: log new outbound connections during window (bounded by rate).
+  if [[ "${OBSERVE_MODE}" == "1" ]]; then
+    nft 'add rule inet aevum_egress output ct state new meta l4proto { tcp, udp } limit rate 50/second log prefix "AEVUM_EGRESS_OBS OUT " flags all counter' >/dev/null 2>&1 || true
+  fi
+
+  # Allow loopback + established/related (for local system stability).
+  nft 'add rule inet aevum_egress output oif "lo" accept comment "aevum_loopback"' >/dev/null 2>&1 || true
+  nft 'add rule inet aevum_egress output ct state established,related accept comment "aevum_established"' >/dev/null 2>&1 || true
+
+  # Log + drop everything else.
+  nft "add rule inet aevum_egress output limit rate ${LOG_RATE} log prefix \"${LOG_PREFIX}\" flags all counter drop comment \"aevum_egress_logdrop\"" >/dev/null 2>&1 || true
+
+  # Container egress policy (forward chain): default drop with logged drops.
+  nft list chain inet aevum_egress forward >/dev/null 2>&1 || nft 'add chain inet aevum_egress forward { type filter hook forward priority -100 ; policy drop ; }' >/dev/null 2>&1 || true
+  nft 'flush chain inet aevum_egress forward' >/dev/null 2>&1 || true
+  # Observe mode: log new forwarded connections during window (bounded by rate).
+  if [[ "${OBSERVE_MODE}" == "1" ]]; then
+    nft 'add rule inet aevum_egress forward ct state new meta l4proto { tcp, udp } limit rate 50/second log prefix "AEVUM_EGRESS_OBS FWD " flags all counter' >/dev/null 2>&1 || true
+  fi
+  nft 'add rule inet aevum_egress forward ct state established,related accept comment "aevum_fwd_established"' >/dev/null 2>&1 || true
+
+  # Allow intra-bridge container traffic (same bridge in/out) so local stacks still function.
+  while read -r ifc; do
+    [[ -n "$ifc" ]] || continue
+    nft "add rule inet aevum_egress forward iifname \"$ifc\" oifname \"$ifc\" accept comment \"aevum_container_intra_${ifc}\"" >/dev/null 2>&1 || true
+  done < <(list_container_ifaces)
+
+  nft "add rule inet aevum_egress forward limit rate ${LOG_RATE} log prefix \"${LOG_PREFIX}FWD_DROP \" flags all counter drop comment \"aevum_egress_fwd_logdrop\"" >/dev/null 2>&1 || true
+
+  write_state_file
+}
+
+open_window() {
+  local seconds="$1"
+  local tag="$2"
+
+  # Refresh destination allowlist sets if enabled.
+  refresh_dst_sets || true
+  # Refresh DNS allowlist sets if enabled.
+  refresh_dns_sets || true
+  ensure_tables
+  nft list chain inet aevum_egress output >/dev/null 2>&1 || nft 'add chain inet aevum_egress output { type filter hook output priority -100 ; policy drop ; }' >/dev/null 2>&1 || true
+  nft 'flush chain inet aevum_egress output' >/dev/null 2>&1 || true
+
+  # Observe mode: log new outbound connections during window (bounded by rate).
+  if [[ "${OBSERVE_MODE}" == "1" ]]; then
+    nft 'add rule inet aevum_egress output ct state new meta l4proto { tcp, udp } limit rate 50/second log prefix "AEVUM_EGRESS_OBS OUT " flags all counter' >/dev/null 2>&1 || true
+  fi
+
+  # Allow DNS + HTTPS/HTTP during window. DNS honors DNS_MODE.
+  if [[ "${DNS_MODE}" == "allowlist" ]]; then
+    nft 'add rule inet aevum_egress output ip daddr @aevum_allow_dns4 udp dport 53 accept comment "aevum_dns_allowlist"' >/dev/null 2>&1 || true
+    nft 'add rule inet aevum_egress output ip daddr @aevum_allow_dns4 tcp dport 53 accept comment "aevum_dns_tcp_allowlist"' >/dev/null 2>&1 || true
+    nft 'add rule inet aevum_egress output ip6 daddr @aevum_allow_dns6 udp dport 53 accept comment "aevum_dns6_allowlist"' >/dev/null 2>&1 || true
+    nft 'add rule inet aevum_egress output ip6 daddr @aevum_allow_dns6 tcp dport 53 accept comment "aevum_dns6_tcp_allowlist"' >/dev/null 2>&1 || true
+  else
+    nft 'add rule inet aevum_egress output udp dport 53 accept comment "aevum_dns_window"' >/dev/null 2>&1 || true
+    nft 'add rule inet aevum_egress output tcp dport 53 accept comment "aevum_dns_tcp_window"' >/dev/null 2>&1 || true
+  fi
+  if [[ "${DEST_MODE}" == "allowlist" ]]; then
+    nft "add rule inet aevum_egress output ip daddr @aevum_allow_dst4 tcp dport 443 accept comment \"$tag\"" >/dev/null 2>&1 || true
+    nft "add rule inet aevum_egress output ip daddr @aevum_allow_dst4 tcp dport 80 accept comment \"$tag\"" >/dev/null 2>&1 || true
+    nft "add rule inet aevum_egress output ip6 daddr @aevum_allow_dst6 tcp dport 443 accept comment \"$tag\"" >/dev/null 2>&1 || true
+    nft "add rule inet aevum_egress output ip6 daddr @aevum_allow_dst6 tcp dport 80 accept comment \"$tag\"" >/dev/null 2>&1 || true
+  else
+    nft "add rule inet aevum_egress output tcp dport 443 accept comment \"$tag\"" >/dev/null 2>&1 || true
+    nft "add rule inet aevum_egress output tcp dport 80 accept comment \"$tag\"" >/dev/null 2>&1 || true
+  fi
+  nft 'add rule inet aevum_egress output limit rate 10/second log prefix "AEVUM_NFT OUT_DROP " flags all counter drop comment "aevum_default_drop"' >/dev/null 2>&1 || true
+
+  # Configure container forwarding window policy too.
+  configure_forward_chain_window "$tag"
+
+  write_state_file
+
+  receipt note "egress window opened" component=egress seconds="$seconds" tag="$tag" ruleset_sha256="$(state_hash)" || true
+
+  # Sleep window and close
+  sleep "$seconds"
+  close_egress
+  receipt note "egress window closed" component=egress seconds="$seconds" tag="$tag" ruleset_sha256="$(state_hash)" || true
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  status)
+    echo "STATE_FILE=$STATE_FILE"
+    echo "NFT_FILE=$NFT_FILE"
+    echo "ruleset_sha256=$(state_hash)"
+    if nft list chain inet aevum_egress output >/dev/null 2>&1; then
+      nft list chain inet aevum_egress output
+    else
+      echo "aevum_egress chain not present (ok)"
+    fi
+    ;;
+  close)
+    close_egress
+    receipt note "egress closed (policy drop)" component=egress ruleset_sha256="$(state_hash)" || true
+    ;;
+  run)
+    shift
+    seconds="${1:-$DEFAULT_WINDOW_SECONDS}"
+    shift || true
+    [[ "${1:-}" == "--" ]] || { echo "Expected -- before command"; exit 2; }
+    shift
+    [[ "$#" -ge 1 ]] || { echo "No command provided"; exit 2; }
+
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    tag="$(sanitize_comment "aevum_open_${stamp}_$RANDOM")"
+
+    echo "Authorize internet for ${seconds}s to run: $*"
+    open_window "$seconds" "$tag" &
+    pid=$!
+    # run the command while window is open
+    set +e
+    "$@"
+    rc=$?
+    set -e
+    wait "$pid" || true
+    exit "$rc"
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
