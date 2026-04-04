@@ -51,21 +51,41 @@ if [ -z "$MODE" ]; then
     MODE="$(tr -d ' \t\r\n' < /etc/aevum/mode || true)"
   fi
 fi
+# Mode semantics:
+#   install     (DEV/BOOTSTRAP) - low-assurance; missing tools/sig/layout are non-blocking skips.
+#               Intended for first-boot before the full toolchain is installed.
+#   maintenance (VERIFY)        - medium-assurance; digest + SLSA must pass;
+#               sig/layout skips count as failures but do not block.
+#   locked      (STRICT)        - all checks must pass; any skip or failure blocks apply.
+#   estop                       - deny everything, no apply permitted.
 MODE="${MODE:-install}"
+
+# Derive the minimum enforcement level for this run.
+# skip_ok=1  → a check can emit "skip" and still count as non-blocking
+# skip_ok=0  → a "skip" is treated as a failure
+case "$MODE" in
+  install)     SKIP_OK=1 ; ASSURANCE="LOW (install/bootstrap)" ;;
+  maintenance) SKIP_OK=0 ; ASSURANCE="MEDIUM (maintenance/verify)" ;;
+  locked)      SKIP_OK=0 ; ASSURANCE="STRICT (locked)" ;;
+  estop)       SKIP_OK=0 ; ASSURANCE="DENY-ALL (estop)" ;;
+  *)           SKIP_OK=1 ; ASSURANCE="UNKNOWN" ;;
+esac
 
 MAN="$BUNDLE_DIR/BUNDLE_MANIFEST.json"
 POLICY="/etc/aevum/registry/supply_chain_policy.json"
-RECEIPT_DIR="/srv/platform/state/receipts/supply_chain"
-LOG_DIR="/srv/aevum-hot/bootstrap/logs"
+# Allow env-var overrides for dev/proof environments where /srv/* is not writable.
+RECEIPT_DIR="${AEVUM_RECEIPT_DIR:-/srv/platform/state/receipts/supply_chain}"
+LOG_DIR="${AEVUM_LOG_DIR:-/srv/aevum-hot/bootstrap/logs}"
 
 mkdir -p "$RECEIPT_DIR" "$LOG_DIR"
 LOG="$LOG_DIR/provenance_verify_${TS}.log"
 exec > >(tee -a "$LOG") 2>&1
 
 echo "== AEVUM PROVENANCE VERIFY [$TS] =="
-echo "Bundle:  $BUNDLE_DIR"
-echo "Mode:    $MODE"
-echo "Policy:  $POLICY"
+echo "Bundle:    $BUNDLE_DIR"
+echo "Mode:      $MODE"
+echo "Assurance: $ASSURANCE"
+echo "Policy:    $POLICY"
 
 # --- Helpers ---
 
@@ -161,13 +181,13 @@ SIG_FAIL=0
 
 if ! command -v cosign >/dev/null 2>&1; then
   echo "  [warn] cosign not installed; skipping Sigstore verification."
-  if [ "$MODE" = "locked" ]; then
-    echo "  ERROR: locked mode requires cosign. Install cosign and retry." >&2
-    emit_receipt "supply_chain_sig_verified" "fail" "cosign not installed in locked mode"
+  if [ "$SKIP_OK" -eq 0 ]; then
+    echo "  ERROR: mode=$MODE requires cosign. Install cosign and retry." >&2
+    emit_receipt "supply_chain_sig_verified" "fail" "cosign not installed; required in $MODE mode"
     VERIFY_FAIL=$((VERIFY_FAIL+1))
     SIG_FAIL=1
   else
-    emit_receipt "supply_chain_sig_verified" "skip" "cosign not installed (non-locked mode)"
+    emit_receipt "supply_chain_sig_verified" "skip" "cosign not installed (install/bootstrap mode)"
   fi
 else
   for artifact in bootkit bootstrap gitops; do
@@ -180,14 +200,44 @@ else
       fi
       continue
     fi
+    # Load allowed signer identities from supply chain policy
+    CERT_IDENTITY=""
+    CERT_ISSUER=""
+    if [ -f "$POLICY" ]; then
+      CERT_IDENTITY="$(python3 -c "
+import json
+d=json.load(open('$POLICY'))
+ids=d.get('sigstore',{}).get('allowed_signing_identities',[])
+if ids: print(ids[0].get('subject',''))
+" 2>/dev/null || echo "")"
+      CERT_ISSUER="$(python3 -c "
+import json
+d=json.load(open('$POLICY'))
+ids=d.get('sigstore',{}).get('allowed_signing_identities',[])
+if ids: print(ids[0].get('issuer',''))
+" 2>/dev/null || echo "")"
+    fi
+
+    if [ -z "$CERT_IDENTITY" ] || [[ "$CERT_IDENTITY" == *"REPLACE_WITH"* ]]; then
+      echo "  [warn] supply_chain_policy has no finalized signer identity."
+      if [ "$SKIP_OK" -eq 0 ]; then
+        echo "  ERROR: mode=$MODE requires a real signer identity in supply_chain_policy.json" >&2
+        SIG_FAIL=1
+        continue
+      fi
+      echo "  [skip] Sigstore verification skipped (policy identity not finalized; acceptable in install/bootstrap mode)"
+      continue
+    fi
+
     if cosign verify-blob \
         --bundle "$BUNDLE_FILE" \
-        --certificate-identity-regexp ".*" \
-        --certificate-oidc-issuer-regexp ".*" \
+        --certificate-identity "$CERT_IDENTITY" \
+        --certificate-oidc-issuer "$CERT_ISSUER" \
         "$ZIP_PATH" 2>/dev/null; then
-      echo "  [ok] $artifact Sigstore signature verified"
+      echo "  [ok] $artifact Sigstore signature verified (identity=$CERT_IDENTITY)"
     else
       echo "  [FAIL] $artifact Sigstore signature verification failed"
+      echo "         identity=$CERT_IDENTITY issuer=$CERT_ISSUER"
       SIG_FAIL=1
     fi
   done
@@ -211,13 +261,13 @@ INTOTO_FAIL=0
 
 if ! command -v in-toto-verify >/dev/null 2>&1; then
   echo "  [warn] in-toto-verify not installed; skipping layout check."
-  if [ "$MODE" = "locked" ]; then
-    echo "  ERROR: locked mode requires in-toto-verify." >&2
-    emit_receipt "supply_chain_layout_verified" "fail" "in-toto-verify not installed in locked mode"
+  if [ "$SKIP_OK" -eq 0 ]; then
+    echo "  ERROR: mode=$MODE requires in-toto-verify." >&2
+    emit_receipt "supply_chain_layout_verified" "fail" "in-toto-verify not installed; required in $MODE mode"
     VERIFY_FAIL=$((VERIFY_FAIL+1))
     INTOTO_FAIL=1
   else
-    emit_receipt "supply_chain_layout_verified" "skip" "in-toto-verify not installed (non-locked mode)"
+    emit_receipt "supply_chain_layout_verified" "skip" "in-toto-verify not installed (install/bootstrap mode)"
   fi
 else
   LAYOUT_DIR="$PROVENANCE_DIR/in-toto"
@@ -296,8 +346,8 @@ if [ "$MODE" = "estop" ]; then
   POLICY_FAIL=1
 fi
 
-if [ "$MODE" = "locked" ] && [ "$VERIFY_FAIL" -gt 0 ]; then
-  echo "  [FAIL] Locked mode with $VERIFY_FAIL verification failure(s); refusing apply."
+if [ "$SKIP_OK" -eq 0 ] && [ "$VERIFY_FAIL" -gt 0 ]; then
+  echo "  [FAIL] mode=$MODE with $VERIFY_FAIL verification failure(s); refusing apply."
   POLICY_FAIL=1
 fi
 

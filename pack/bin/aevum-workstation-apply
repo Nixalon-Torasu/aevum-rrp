@@ -93,6 +93,63 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl reset-failed >/dev/null 2>&1 || true
 fi
 
+# --- Install: OpenSSF verifier toolchain (cosign + in-toto)
+# These are required by aevum-provenance-verify. Pin versions for reproducibility.
+say "[install] OpenSSF verifier toolchain (cosign + in-toto)..."
+
+COSIGN_VERSION="${AEVUM_COSIGN_VERSION:-v2.4.1}"
+COSIGN_BIN="/usr/local/bin/cosign"
+
+install_cosign() {
+  if command -v cosign >/dev/null 2>&1; then
+    INSTALLED="$(cosign version 2>/dev/null | grep -oP 'GitVersion:\s*\K[^\s]+' || echo unknown)"
+    say "  cosign already installed ($INSTALLED)"
+    return 0
+  fi
+  ARCH="$(uname -m)"
+  case "$ARCH" in
+    x86_64)  COSIGN_ARCH="amd64" ;;
+    aarch64) COSIGN_ARCH="arm64" ;;
+    *)       say "  [warn] Unknown arch $ARCH; skipping cosign install"; return 0 ;;
+  esac
+  COSIGN_URL="https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-${COSIGN_ARCH}"
+  say "  downloading cosign ${COSIGN_VERSION}..."
+  if curl -fsSL "$COSIGN_URL" -o "$COSIGN_BIN" 2>/dev/null; then
+    chmod +x "$COSIGN_BIN"
+    say "  [ok] cosign installed at $COSIGN_BIN"
+  else
+    say "  [warn] cosign download failed (offline?); aevum-provenance-verify will warn in non-locked mode"
+  fi
+}
+
+install_intoto() {
+  if command -v in-toto-verify >/dev/null 2>&1; then
+    say "  in-toto-verify already installed"
+    return 0
+  fi
+  if command -v pip3 >/dev/null 2>&1 || command -v pip >/dev/null 2>&1; then
+    PIP="$(command -v pip3 2>/dev/null || command -v pip)"
+    say "  installing in-toto via pip..."
+    if "$PIP" install --quiet in-toto 2>/dev/null; then
+      say "  [ok] in-toto installed"
+    else
+      say "  [warn] in-toto pip install failed; aevum-provenance-verify will warn in non-locked mode"
+    fi
+  else
+    say "  [warn] pip not available; in-toto-verify not installed"
+  fi
+}
+
+install_cosign
+install_intoto
+
+# Also install aevum-provenance-verify into /usr/local/sbin if present in bootkit
+PROV_VERIFY_SRC="${PACK}/../bootkit/bin/aevum-provenance-verify"
+if [ -f "$PROV_VERIFY_SRC" ]; then
+  install -m 0755 "$PROV_VERIFY_SRC" /usr/local/sbin/aevum-provenance-verify
+  say "  [ok] aevum-provenance-verify installed"
+fi
+
 # --- Install: /opt/aevum-tools (tools)
 say "[install] /opt/aevum-tools..."
 sync_tree "${PACK}/opt/aevum-tools" "/opt/aevum-tools"

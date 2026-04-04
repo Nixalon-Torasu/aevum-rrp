@@ -121,6 +121,16 @@ def _best_effort_tpm_refs(base: pathlib.Path) -> Dict[str, Any]:
             out["eventlog_sha256"] = "sha256:" + sha256_file(latest_ev)
         except Exception:
             pass
+
+    # PCR snapshot: written by aevum_pcr_capture.py at boot time
+    latest_pcr = _find_latest_file(base / "boot", "pcr_", ".json")
+    if latest_pcr:
+        try:
+            out["pcr_snapshot_ref"] = str(latest_pcr)
+            out["pcr_snapshot_sha256"] = "sha256:" + sha256_file(latest_pcr)
+        except Exception:
+            pass
+
     return out
 
 def sha256_file(p: pathlib.Path) -> str:

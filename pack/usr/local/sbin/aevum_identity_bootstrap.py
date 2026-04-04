@@ -28,6 +28,7 @@ import shutil
 import os
 import pathlib
 import socket
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -160,6 +161,102 @@ def gather_platform_facts() -> dict:
         },
         "hardware_fingerprint": hw_fp,
     }
+
+
+def _tpm_pubkey_sha256(handle: str) -> str | None:
+    """
+    Read the public key for a TPM persistent object at <handle> and return
+    'sha256:<hex>' of its PEM-encoded bytes.  Best-effort: returns None on
+    any failure (tpm2-tools not installed, handle not provisioned, etc.).
+    """
+    try:
+        if not shutil.which("tpm2_readpublic"):
+            return None
+        with tempfile.TemporaryDirectory(prefix="aevum_tpm_id_") as td:
+            pem_out = pathlib.Path(td) / "key.pem"
+            proc = subprocess.run(
+                ["tpm2_readpublic", "-c", handle, "-f", "pem", "-o", str(pem_out)],
+                capture_output=True, timeout=15,
+            )
+            if proc.returncode != 0 or not pem_out.exists():
+                return None
+            pem_bytes = pem_out.read_bytes()
+            return "sha256:" + sha256_hex(pem_bytes)
+    except Exception:
+        return None
+
+
+def gather_tpm_identity() -> list[dict]:
+    """
+    Probe standard persistent TPM handles for EK (0x81010001) and AK (0x81010002).
+    Returns a list of trust_anchor dicts; empty list if TPM is unavailable.
+
+    Each entry:
+        {
+          "type":       "TPM2_PERSISTENT_KEY",
+          "handle":     "0x81010001",
+          "role":       "EK" | "AK",
+          "alg":        "ECC_P256" | "RSA_2048" (best-effort from tool output),
+          "pubkey_sha256": "sha256:<hex>",    # sha256 of DER-encoded PEM bytes
+          "captured_at": "<ISO-8601>",
+        }
+
+    Silently skips handles that are not provisioned or on which tpm2-tools fails.
+    """
+    anchors: list[dict] = []
+    probes = [
+        ("0x81010001", "EK"),
+        ("0x81010002", "AK"),
+    ]
+    ts = utc_now_iso()
+    for handle, role in probes:
+        sha = _tpm_pubkey_sha256(handle)
+        if sha is None:
+            continue
+        anchors.append({
+            "type": "TPM2_PERSISTENT_KEY",
+            "handle": handle,
+            "role": role,
+            "pubkey_sha256": sha,
+            "captured_at": ts,
+        })
+    return anchors
+
+
+def emit_provisioning_receipt_best_effort(base: pathlib.Path, identity_id: str) -> None:
+    """
+    After identity.json is written, emit a chain-I receipt recording the
+    provisioning event.  Best-effort: silently skips if aevum-receipt is
+    not yet installed (first-boot before the toolchain is deployed).
+    """
+    receipt = pathlib.Path("/opt/aevum-tools/bin/aevum-receipt")
+    if not (receipt.exists() and os.access(receipt, os.X_OK)):
+        for candidate in [
+            pathlib.Path("/usr/local/bin/aevum-receipt"),
+            pathlib.Path("/usr/bin/aevum-receipt"),
+        ]:
+            if candidate.exists() and os.access(candidate, os.X_OK):
+                receipt = candidate
+                break
+        else:
+            return  # toolchain not yet installed — skip silently
+    try:
+        subprocess.run(
+            [
+                str(receipt),
+                "note",
+                "machine identity provisioned",
+                "component=identity",
+                f"identity_id={identity_id}",
+                f"base={base}",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            env={**os.environ, "AEVUM_ALLOW_UNSEALED": "1"},
+        )
+    except Exception:
+        pass
 
 
 def generate_ed25519_keypair() -> tuple[Ed25519PrivateKey, bytes]:
@@ -475,7 +572,7 @@ def main() -> int:
             "run_as": {"user": getpass.getuser(), "euid": os.geteuid()},
             "notes": "Self-signed identity + disk key. Optional canon_digest identifies a rule-set but MUST NOT be required for use.",
         },
-        "trust_anchors": [],
+        "trust_anchors": gather_tpm_identity(),
     }
 
     sig_raw = sk.sign(canonical_json_bytes(unsigned_identity))
@@ -529,6 +626,19 @@ def main() -> int:
     print(f"    Private key: {sk_path} (mode 0400 expected)")
     print(f"    Seal:        {seal_path}")
     print(f"    Public:      {pub_path}")
+
+    # Report TPM trust_anchors that were captured
+    anchors = unsigned_identity.get("trust_anchors") or []
+    if anchors:
+        print(f"    TPM anchors: {len(anchors)} captured")
+        for a in anchors:
+            print(f"      [{a.get('role','')}] {a.get('handle','')} -> {a.get('pubkey_sha256','')}")
+    else:
+        print("    TPM anchors: none captured (tpm2-tools not installed or handles not provisioned)")
+
+    # Best-effort: emit a chain-I receipt for the provisioning event
+    emit_provisioning_receipt_best_effort(base, identity_id)
+
     return 0
 
 
