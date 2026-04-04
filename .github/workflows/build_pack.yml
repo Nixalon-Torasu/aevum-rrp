@@ -49,6 +49,12 @@ jobs:
             echo "version=vCI-${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Fix script permissions
+        run: |
+          find . -name "*.sh" -exec chmod +x {} \;
+          find . -name "*.py" -path "*/bin/*" -exec chmod +x {} \;
+          chmod +x bootkit/bin/* pack/bin/* pack/opt/aevum-tools/bin/* pack/usr/local/sbin/* 2>/dev/null || true
+
       - name: Build release zip
         run: |
           ./tools/build_release_zip.sh "${{ steps.version.outputs.version }}"
