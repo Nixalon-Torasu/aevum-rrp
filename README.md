@@ -209,9 +209,7 @@ Near-term direction includes:
 
 ## License
 
-Licensed under Apache 2.0.
-
-See `LICENSE`.
+Licensed under AGPL v3.0. See `LICENSE`.
 
 ---
 
