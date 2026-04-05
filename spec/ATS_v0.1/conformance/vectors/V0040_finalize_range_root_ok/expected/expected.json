@@ -1,0 +1,1 @@
+{"kind":"conformance.expected.v1","operations":[{"expect":{"ok":true,"range_root":"sha256:373efac8ffefc9c8644d44d637fbe2dfb0671d144ad9dcd477fc02c474786ad2"},"in":"inputs/finalize.json","op":"finalize_compute","out":null}],"v":1,"vector_id":"V0040_finalize_range_root_ok"}

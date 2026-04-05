@@ -1,0 +1,1 @@
+{"kind":"conformance.expected.v1","operations":[{"expect":{"ok":true,"payload_hash":"sha256:012d3a00db327e40c3bf15a6334afbcc44354a524d1e0f93082958441fe80c1e"},"in":"inputs/payload.json","op":"payload_hash","out":null}],"v":1,"vector_id":"V0003_payload_hash"}

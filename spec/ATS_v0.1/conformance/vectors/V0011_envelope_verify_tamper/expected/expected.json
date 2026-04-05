@@ -1,0 +1,1 @@
+{"kind":"conformance.expected.v1","operations":[{"expect":{"error_code":"E_SIG_INVALID","ok":false},"in":"inputs/envelope_tampered.json","op":"envelope_verify","out":null}],"v":1,"vector_id":"V0011_envelope_verify_tamper"}

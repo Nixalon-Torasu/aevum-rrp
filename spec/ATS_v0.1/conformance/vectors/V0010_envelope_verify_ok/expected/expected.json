@@ -1,0 +1,1 @@
+{"kind":"conformance.expected.v1","operations":[{"expect":{"envelope_id":"sha256:24ba1042154cdb00b51bda2d78d0f90385290e95161cb42b216893d4b3b19b75","ok":true,"payload_hash":"sha256:012d3a00db327e40c3bf15a6334afbcc44354a524d1e0f93082958441fe80c1e"},"in":"inputs/envelope.json","op":"envelope_verify","out":null}],"v":1,"vector_id":"V0010_envelope_verify_ok"}

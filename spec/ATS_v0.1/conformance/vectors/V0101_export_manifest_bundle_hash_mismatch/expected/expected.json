@@ -1,0 +1,1 @@
+{"kind":"conformance.expected.v1","operations":[{"expect":{"error_code":"E_EXPORT_MANIFEST","ok":false},"in":"inputs/MANIFEST_bad.json","op":"export_manifest_bundle_hash","out":null}],"v":1,"vector_id":"V0101_export_manifest_bundle_hash_mismatch"}

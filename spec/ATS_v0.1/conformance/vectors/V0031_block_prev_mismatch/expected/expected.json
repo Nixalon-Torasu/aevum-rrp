@@ -1,0 +1,1 @@
+{"kind":"conformance.expected.v1","operations":[{"expect":{"error_code":"E_PREV_MISMATCH","error_height":1,"mode":"fast","ok":false},"in":"inputs/ledger","op":"verify","out":null}],"v":1,"vector_id":"V0031_block_prev_mismatch"}

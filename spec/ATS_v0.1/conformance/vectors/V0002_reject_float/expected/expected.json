@@ -1,0 +1,1 @@
+{"kind":"conformance.expected.v1","operations":[{"expect":{"error_code":"E_CANON","ok":false},"in":"inputs/float.json","op":"jcs","out":null}],"v":1,"vector_id":"V0002_reject_float"}

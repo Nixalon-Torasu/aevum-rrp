@@ -1,0 +1,1 @@
+{"kind":"conformance.expected.v1","operations":[{"expect":{"mode":"fast","ok":true,"verified_end":0},"in":"inputs/ledger","op":"verify","out":null}],"v":1,"vector_id":"V0030_block_genesis_ok"}

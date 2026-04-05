@@ -1,0 +1,1 @@
+{"kind":"conformance.expected.v1","operations":[{"expect":{"jcs_hex":"7b2261223a312c2262223a322c2263223a7b2279223a382c227a223a397d7d","ok":true},"in":"inputs/object.json","op":"jcs","out":null}],"v":1,"vector_id":"V0001_jcs_canonical_bytes"}

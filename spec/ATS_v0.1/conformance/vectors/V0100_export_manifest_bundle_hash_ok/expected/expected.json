@@ -1,0 +1,1 @@
+{"kind":"conformance.expected.v1","operations":[{"expect":{"bundle_hash":"sha256:fc16a330396b6dd887fe6c5012957b0dd8f3cb67c248737fd252ddb7417ae3d2","ok":true},"in":"inputs/MANIFEST.json","op":"export_manifest_bundle_hash","out":null}],"v":1,"vector_id":"V0100_export_manifest_bundle_hash_ok"}
